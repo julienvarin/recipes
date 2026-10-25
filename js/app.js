@@ -26,10 +26,9 @@ const ICON = {
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
   pause: '<path d="M9 5v14M15 5v14"/>',
   play: '<path d="M7 5l12 7-12 7z"/>',
-  paste: '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
-  sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7z"/>',
+  redo: '<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>',
   users: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><path d="M16 4.5a3 3 0 0 1 0 6M21 20c0-2.6-1.6-4.6-4-5.3"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   upload: '<path d="M12 20V9M7 14l5-5 5 5M5 4h14"/>',
@@ -97,7 +96,7 @@ window.addEventListener("hashchange", () => {
 function cardHtml(r) {
   const img = r.image
     ? `<img src="${r.image}" alt="" loading="lazy">`
-    : `<div class="placeholder">${esc(r.title.slice(0, 1).toUpperCase())}</div>`;
+    : "";
   return `<a class="card" href="#/r/${r.id}">
     <div class="card-img">${img}</div>
     <div class="card-body"><h3>${esc(r.title)}</h3></div>
@@ -125,7 +124,7 @@ function chipsHtml() {
 
 function gridHtml() {
   if (!recipes.length)
-    return `<div class="empty"><h2>No recipes yet</h2><p>Tap <b>+</b> and paste an Instagram reel link.<br>Its caption becomes a recipe card.</p></div>`;
+    return `<div class="empty"><p>Your collection is empty.</p><button class="primary" data-action="add">${icon("plus")}Add a recipe</button></div>`;
   const list = recipes.filter(matches);
   if (!list.length) return `<div class="empty"><p>Nothing matches.</p></div>`;
   return `<div class="grid">${list.map(cardHtml).join("")}</div>`;
@@ -143,7 +142,7 @@ function renderHome() {
     <div id="chips">${chipsHtml()}</div>
     <div id="list">${gridHtml()}</div>
   </div>
-  <button class="fab" data-action="add" aria-label="Add recipe">${icon("plus")}</button>`;
+  ${recipes.length ? `<button class="fab" data-action="add" aria-label="Add a recipe">${icon("plus")}</button>` : ""}`;
   $("#q")?.addEventListener("input", (e) => {
     filter.q = e.target.value;
     $("#list").innerHTML = gridHtml();
@@ -177,7 +176,7 @@ function groupHead(ing, prev) {
 function metaChipsHtml(r) {
   const chips = [
     r.servings && editingId !== r.id && `<span class="chip static">${icon("users")}${esc(r.servings)}</span>`,
-    r.course && `<button class="chip static accent" data-action="tags">${COURSE_LABEL[r.course]}</button>`,
+    r.course && `<button class="chip static" data-action="tags">${COURSE_LABEL[r.course]}</button>`,
     ...r.tags.map((t) => `<button class="chip static" data-action="tags">${esc(tagLabel(t))}</button>`),
     `<button class="chip static add" data-action="tags" aria-label="Add a tag">${icon("plus")}</button>`,
   ].filter(Boolean);
@@ -186,9 +185,9 @@ function metaChipsHtml(r) {
 
 function tagEditorHtml(r) {
   const chip = (attr, value, label, on) => `<button type="button" class="chip" ${attr}="${esc(value)}" aria-pressed="${on}">${esc(label)}</button>`;
-  return `<div class="te-label">Course</div>
+  return `<h3>Course</h3>
     <div class="chip-pick">${COURSES.map((c) => chip("data-course", c, COURSE_LABEL[c], r.course === c)).join("")}</div>
-    <div class="te-label">Tags</div>
+    <h3>Tags</h3>
     <div class="chip-pick">
       ${allTags(r).map((t) => chip("data-tag", t, tagLabel(t), r.tags.includes(t))).join("")}
       <span class="tag-add"><input id="new-tag" placeholder="New tag" enterkeyhint="done" autocomplete="off"><button type="button" data-action="add-tag" aria-label="Add tag">${icon("plus")}</button></span>
@@ -250,8 +249,7 @@ function renderDetail(r) {
           ${
             editing
               ? `<button class="glass pill" data-action="done-edit">${icon("check")}Done</button>`
-              : `<button class="glass" data-action="edit" aria-label="Edit">${icon("edit")}</button>
-                 ${hasLists ? `<button class="glass" data-action="reset" aria-label="Reset checklist">${icon("reset")}</button>` : ""}`
+              : `<button class="glass" data-action="edit" aria-label="Edit">${icon("edit")}</button>`
           }
           <button class="glass" data-action="more" aria-label="More">${icon("more")}</button>
         </div>
@@ -260,8 +258,7 @@ function renderDetail(r) {
     <article class="content ${editing ? "is-editing" : ""}">
       ${editing ? `<textarea class="edit-title" data-field="title" rows="1" placeholder="Recipe name">${esc(r.title)}</textarea>` : `<h1>${esc(r.title)}</h1>`}
       <div class="byline">
-        ${r.author ? `<span>@${esc(r.author)}</span><span>·</span>` : ""}
-        ${r.sourceUrl ? `<a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener">Open reel ${icon("external")}</a>` : ""}
+        ${r.sourceUrl ? `<a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener">${r.author ? "@" + esc(r.author) : "Instagram"}</a>` : r.author ? "@" + esc(r.author) : ""}
       </div>
       ${
         editing
@@ -271,7 +268,7 @@ function renderDetail(r) {
       }
       ${
         r.noRecipe && !editing
-          ? `<div class="banner"><strong>No recipe text found</strong>This reel's caption doesn't seem to contain the recipe (it may only be in the video).<br><button data-action="edit">Add it by hand</button></div>`
+          ? `<div class="banner"><strong>No recipe text found</strong>This reel’s caption doesn’t contain the recipe. It may only be in the video.<br><button data-action="edit">Add it by hand</button></div>`
           : ""
       }
       ${
@@ -435,8 +432,7 @@ function addTag(r) {
 
 function openTagSheet(r) {
   openSheet(
-    `<h2>Tags</h2><p class="sub">Tap to add or remove. Create your own below.</p>
-     <div class="tag-editor" id="sheet-tags">${tagEditorHtml(r)}</div>
+    `<div class="tag-editor" id="sheet-tags">${tagEditorHtml(r)}</div>
      <button class="primary" data-action="close-sheet" style="margin-top:22px">Done</button>`
   );
 }
@@ -473,10 +469,9 @@ function closeSheet(instant) {
 function openAdd(prefill = "", autoStart = false) {
   openSheet(
     `<h2>Add a recipe</h2>
-    <p class="sub">Paste an Instagram reel link. The caption becomes a recipe card${settings.apiKey ? ", cleaned up by AI" : ""}.</p>
     <div class="field input-row">
       <input class="input" id="add-url" type="url" inputmode="url" placeholder="https://www.instagram.com/reel/…" value="${esc(prefill)}">
-      ${navigator.clipboard?.readText ? `<button class="sq" data-action="paste" aria-label="Paste">${icon("paste")}</button>` : ""}
+      ${navigator.clipboard?.readText ? `<button class="sq" data-action="paste">Paste</button>` : ""}
     </div>
     <div id="text-wrap" hidden><label class="field"><span>Caption text</span><textarea class="input" id="add-text" placeholder="Paste the recipe text here"></textarea></label></div>
     <button class="primary" data-action="do-import">Import</button>
@@ -512,7 +507,7 @@ async function doImport() {
     let post = { url: "", shortcode: "", author: "", caption: pasted, image: "" };
     if (url) {
       const code = url.match(/instagram\.com\/(?:[\w.]+\/)?(?:reels?|p|tv)\/([A-Za-z0-9_-]+)/)?.[1];
-      if (!code) throw new Error("That doesn't look like an Instagram reel link.");
+      if (!code) throw new Error("That doesn’t look like an Instagram reel link.");
       const existing = recipes.find((r) => r.shortcode === code);
       if (existing) {
         closeSheet();
@@ -604,8 +599,8 @@ async function reparseWithAi(r) {
 
 function openMore(r) {
   openSheet(`<div class="menu">
-      <button data-action="edit">${icon("edit")}Edit</button>
-      ${r.caption ? `<button data-action="reparse">${icon("sparkle")}Re-read with AI</button>` : ""}
+      ${r.ingredients.length || r.steps.length ? `<button data-action="reset">${icon("reset")}Reset checklist</button>` : ""}
+      ${r.caption ? `<button data-action="reparse">${icon("redo")}Re-read with AI</button>` : ""}
       ${r.sourceUrl ? `<a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener">${icon("external")}Open reel on Instagram</a>` : ""}
       <button class="danger" data-action="delete">${icon("trash")}Delete recipe</button>
     </div>`);
@@ -614,12 +609,11 @@ function openMore(r) {
 function openSettings() {
   openSheet(
     `<h2>Settings</h2>
-    <p class="sub">Saved on this device only.</p>
-    <label class="field"><span>Worker URL</span><input class="input" id="s-worker" type="url" placeholder="https://recipes-relay.you.workers.dev" value="${esc(settings.workerUrl)}"><small>Your Cloudflare Worker that reads Instagram reels.</small></label>
-    <label class="field"><span>Anthropic API key (optional)</span><input class="input" id="s-key" type="password" placeholder="sk-ant-…" value="${esc(settings.apiKey)}" autocomplete="off"><small>With a key, Claude Haiku cleans up recipes, simplifies the steps and adds tags. Without it, a free basic reader is used.</small></label>
+    <label class="field"><span>Worker URL</span><input class="input" id="s-worker" type="url" placeholder="https://recipes-relay.you.workers.dev" value="${esc(settings.workerUrl)}"></label>
+    <label class="field"><span>Anthropic API key</span><input class="input" id="s-key" type="password" placeholder="sk-ant-…" value="${esc(settings.apiKey)}" autocomplete="off"><small>Optional. Cleans up recipes with Claude Haiku.</small></label>
     <button class="primary" data-action="save-settings">Save</button>
     <div class="divider"></div>
-    <p class="sub" style="margin-bottom:10px">Backup: your recipes live in this browser. Export them now and then.</p>
+    <h3>Backup</h3>
     <div class="row-2">
       <button class="secondary" data-action="export">${icon("download")}Export</button>
       <button class="secondary" data-action="import-file">${icon("upload")}Import</button>
@@ -657,7 +651,7 @@ async function importBackup(e) {
     route();
     toast(`Imported ${added} recipe${added === 1 ? "" : "s"}`);
   } catch {
-    toast("That file isn't a recipes backup");
+    toast("That file isn’t a recipes backup");
   }
 }
 
@@ -677,14 +671,13 @@ const fmt = (s) => {
   return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
 };
 
-function startTimer(recipe, stepIndex, seconds, label) {
+function startTimer(recipe, stepIndex, seconds) {
   audioCtx ??= new (window.AudioContext || window.webkitAudioContext)();
   audioCtx.resume?.();
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
-  timers.push({ id: uid(), recipeId: recipe.id, label: `Step ${stepIndex + 1} · ${recipe.title}`, end: Date.now() + seconds * 1000, fired: false });
+  timers.push({ id: uid(), recipeId: recipe.id, step: stepIndex + 1, title: recipe.title, end: Date.now() + seconds * 1000, fired: false });
   saveTimers();
   tickTimers();
-  toast(`Timer started: ${label}`);
 }
 
 function beep() {
@@ -710,8 +703,8 @@ function fire(t) {
   navigator.vibrate?.([300, 120, 300, 120, 500]);
   if ("Notification" in window && Notification.permission === "granted") {
     navigator.serviceWorker?.ready
-      .then((reg) => reg.showNotification("Timer done", { body: t.label, tag: t.id }))
-      .catch(() => new Notification("Timer done", { body: t.label }));
+      .then((reg) => reg.showNotification(`Step ${t.step} is done`, { body: t.title, tag: t.id }))
+      .catch(() => new Notification(`Step ${t.step} is done`, { body: t.title }));
   }
 }
 
@@ -723,7 +716,7 @@ function tickTimers() {
       const left = remaining(t);
       const done = t.fired;
       return `<div class="timer ${done ? "done" : ""} ${t.pausedLeft != null ? "paused" : ""}" data-timer="${t.id}">
-        <span class="t-label" data-action="timer-open">${esc(t.label)}</span>
+        <span class="t-label" data-action="timer-open">${t.step ? `<b>Step ${t.step}</b> ${esc(t.title)}` : esc(t.label)}</span>
         <span class="t-time">${done ? "Done" : fmt(left)}</span>
         ${done ? "" : `<button data-action="timer-pause" aria-label="${t.pausedLeft != null ? "Resume" : "Pause"}">${icon(t.pausedLeft != null ? "play" : "pause")}</button>`}
         <button data-action="timer-close" aria-label="Dismiss">${icon("x")}</button>
@@ -784,7 +777,7 @@ document.addEventListener("click", async (e) => {
   const tchip = e.target.closest(".tchip");
   if (tchip && current) {
     const step = +tchip.closest("[data-step]").dataset.step;
-    startTimer(current, step, +tchip.dataset.sec, tchip.dataset.label);
+    startTimer(current, step, +tchip.dataset.sec);
     return;
   }
 
@@ -828,6 +821,7 @@ document.addEventListener("click", async (e) => {
       doImport();
       break;
     case "reset":
+      closeSheet();
       if (current) resetChecks(current);
       break;
     case "more":
