@@ -240,6 +240,9 @@ textarea.input { height: auto; min-height: 140px; padding: 12px; line-height: 1.
 .divider { height: 1px; margin: 22px 0; background: var(--line); }
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
+#rescue { padding: calc(env(safe-area-inset-top) + 80px) 24px 0; text-align: center; color: var(--text-2); }
+#rescue button { margin-top: 12px; height: 48px; padding: 0 22px; border-radius: var(--r-sm); background: var(--text); color: var(--bg); font-weight: 600; }
+
 /* ---------- Toast ---------- */
 .toast { position: fixed; z-index: 50; left: 50%; top: calc(env(safe-area-inset-top) + 12px); max-width: calc(100% - 32px); padding: 11px 16px; border-radius: var(--r-sm); background: var(--text); color: var(--bg); font-size: 15px; transform: translate(-50%, -160%); transition: transform 0.22s ease; }
 .toast.show { transform: translate(-50%, 0); }
