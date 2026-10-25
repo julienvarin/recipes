@@ -1,7 +1,7 @@
 import { db } from "./db.js";
 import { parseCaption, findDurations } from "./parse.js";
 import { aiParse, COURSES, TAGS } from "./ai.js";
-import { normalizeIngredient, sortIngredients } from "./ingredients.js";
+import { normalizeIngredient, sortIngredients, blockOf } from "./ingredients.js";
 
 // ---------- Small helpers ----------
 
@@ -194,13 +194,22 @@ function tagEditorHtml(r) {
     </div>`;
 }
 
+function ingredientRow(r, ing, i) {
+  return `<li><button class="check-row" data-ing="${i}" aria-pressed="${r.have.includes(i)}"><span class="box">${icon("check")}</span><span class="txt">${esc(ing.name)}</span>${ing.qty ? `<span class="qty">${esc(ing.qty)}</span>` : ""}</button></li>`;
+}
+
+// Recipes split into parts by their caption (dough, sauce…) keep those parts;
+// the rest is shown in three untitled blocks: the base, the rest, and basics.
 function ingredientsView(r) {
-  return r.ingredients
-    .map(
-      (ing, i) =>
-        `${groupHead(ing, r.ingredients[i - 1])}<li><button class="check-row" data-ing="${i}" aria-pressed="${r.have.includes(i)}"><span class="box">${icon("check")}</span><span class="txt">${esc(ing.name)}</span>${ing.qty ? `<span class="qty">${esc(ing.qty)}</span>` : ""}</button></li>`
-    )
-    .join("");
+  if (r.ingredients.some((ing) => ing.group)) {
+    const rows = r.ingredients.map((ing, i) => groupHead(ing, r.ingredients[i - 1]) + ingredientRow(r, ing, i)).join("");
+    return `<ul class="checklist">${rows}</ul>`;
+  }
+  const blocks = [[], [], []];
+  r.ingredients.forEach((ing, i) => blocks[blockOf(ing.name)].push(ingredientRow(r, ing, i)));
+  return `<div class="ing-blocks">${blocks
+    .map((rows, n) => (rows.length ? `<ul class="checklist block-${n}">${rows.join("")}</ul>` : ""))
+    .join("")}</div>`;
 }
 
 function ingredientsEdit(r) {
@@ -274,7 +283,7 @@ function renderDetail(r) {
       ${
         r.ingredients.length || editing
           ? `<div class="sec-head"><h2>Ingredients</h2><span id="ing-count">${editing ? "" : countHtml(r.have.length, r.ingredients.length)}</span></div>
-             <ul class="checklist">${editing ? ingredientsEdit(r) : ingredientsView(r)}</ul>`
+             ${editing ? `<ul class="checklist">${ingredientsEdit(r)}</ul>` : ingredientsView(r)}`
           : ""
       }
       ${

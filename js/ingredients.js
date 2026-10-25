@@ -143,3 +143,9 @@ export function sortIngredients(list) {
       .sort((a, b) => a.rank - b.rank || b.grams - a.grams || a.index - b.index)
   );
 }
+
+/** Visual block for the checklist: 0 = the base (protein, veg, starch), 1 = the rest, 2 = basics (liquids, seasoning). */
+export function blockOf(name) {
+  const rank = kindRank(name);
+  return rank <= 2 ? 0 : rank <= 5 ? 1 : 2;
+}

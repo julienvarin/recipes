@@ -31,3 +31,8 @@ test("sorted by kind then amount, groups kept together", () => {
   const grouped = [{ qty: "1 càc", name: "Sel", group: "Pâte" }, { qty: "200 g", name: "Farine", group: "Pâte" }, { qty: "", name: "Basilic", group: "Sauce" }];
   assert.deepEqual(sortIngredients(grouped).map((k) => k.index), [1, 0, 2]);
 });
+
+test("blocks: base, rest, basics", async () => {
+  const { blockOf } = await import("../js/ingredients.js");
+  assert.deepEqual(["Poulet", "Carottes", "Riz", "Feta", "Sucre", "Huile d'olive", "Sel", "Basilic"].map(blockOf), [0, 0, 0, 1, 1, 2, 2, 2]);
+});
