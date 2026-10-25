@@ -22,9 +22,10 @@ const SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["text", "group"],
+        required: ["qty", "name", "group"],
         properties: {
-          text: { type: "string" },
+          qty: { type: "string", description: 'amount with a short unit, e.g. "300 g", "½ càs", "2", or ""' },
+          name: { type: "string", description: 'ingredient, capitalised, without "de"/"of", e.g. "Lentilles cuites"' },
           group: { type: "string", description: 'sub-list name such as "Sauce", or ""' },
         },
       },
@@ -38,7 +39,7 @@ const SYSTEM = `You turn an Instagram recipe caption into a quick-reference reci
 Rules:
 - Write in the caption's language: a French caption gives a French card, an English caption an English card. Never translate.
 - title: short dish name, no emojis.
-- ingredients: one item each, quantity first ("200 g farine", "2 eggs"), concise, no emojis. Keep every ingredient. Use group only when the caption splits ingredients into parts (dough, sauce...).
+- ingredients: one item each, concise, no emojis. Keep every ingredient. qty uses short units: g, kg, ml, cl, L, càs (cuillère à soupe), càc (cuillère à café), pincée for French; g, ml, tbsp, tsp, cup, pinch for English; fractions as ½ ¼ ¾. Use group only when the caption splits ingredients into parts (dough, sauce...).
 - steps: short, simple, imperative steps that are easy to follow while cooking. Usually 4-10 steps, one or two actions each, at most ~25 words. Keep every quantity, temperature and duration exactly (write durations like "35 min", "1 h"). Drop chit-chat, promotions, hashtags and emojis.
 - course: the kind of dish, or "" if unclear.
 - tags: only those clearly supported by the recipe ("resting" = any resting, chilling, marinating or rising time; "quick" = about 20 minutes or less in total).

@@ -1,6 +1,6 @@
 // Offline support: serve the app shell from cache, refresh it in the background.
-const CACHE = "recipes-v1";
-const SHELL = ["./", "index.html", "css/app.css", "js/app.js", "js/db.js", "js/parse.js", "js/ai.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png"];
+const CACHE = "recipes-v2";
+const SHELL = ["./", "index.html", "css/app.css", "js/app.js", "js/db.js", "js/parse.js", "js/ingredients.js", "js/ai.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

@@ -1,6 +1,7 @@
 import { db } from "./db.js";
 import { parseCaption, findDurations } from "./parse.js";
 import { aiParse, COURSES, TAGS } from "./ai.js";
+import { normalizeIngredient, sortIngredients } from "./ingredients.js";
 
 // ---------- Small helpers ----------
 
@@ -74,15 +75,16 @@ let lastView = "";
 
 function route() {
   const [, view, id, sub] = location.hash.split("/");
-  const viewKey = view === "r" ? (sub ? "edit" : "detail") : "home";
+  const viewKey = view === "r" ? "detail" : "home";
+  const editing = editingId && byId(editingId);
+  if (editing && !(view === "r" && id === editingId)) finishEdit(editing);
+  if (view === "r" && sub === "edit") editingId = id;
   if (viewKey === "detail" && lastView === "home") fromHome = true;
   if (viewKey === "home") fromHome = false;
   lastView = viewKey;
   releaseWakeLock();
-  if (view === "r" && byId(id)) {
-    if (sub === "edit") renderEdit(byId(id));
-    else renderDetail(byId(id));
-  } else renderHome();
+  if (view === "r" && byId(id)) renderDetail(byId(id));
+  else renderHome();
 }
 window.addEventListener("hashchange", () => {
   closeSheet();
@@ -92,27 +94,13 @@ window.addEventListener("hashchange", () => {
 
 // ---------- Home ----------
 
-function cardMeta(r) {
-  const bits = [];
-  if (r.course) bits.push(COURSE_LABEL[r.course]);
-  if (r.ingredients.length) bits.push(`${r.ingredients.length} ingredients`);
-  if (r.tags.length) bits.push(TAG_LABEL[r.tags[0]]);
-  return bits.join(" · ") || (r.author ? "@" + r.author : "");
-}
-
 function cardHtml(r) {
-  const ticked = r.have.length + r.done.length;
-  const badge = r.noRecipe
-    ? '<span class="badge warn">No recipe text</span>'
-    : ticked > 0 && r.steps.length
-      ? `<span class="badge">${r.done.length}/${r.steps.length} steps</span>`
-      : "";
   const img = r.image
     ? `<img src="${r.image}" alt="" loading="lazy">`
     : `<div class="placeholder">${esc(r.title.slice(0, 1).toUpperCase())}</div>`;
   return `<a class="card" href="#/r/${r.id}">
-    <div class="card-img">${img}${badge}</div>
-    <div class="card-body"><h3>${esc(r.title)}</h3><p>${esc(cardMeta(r))}</p></div>
+    <div class="card-img">${img}</div>
+    <div class="card-body"><h3>${esc(r.title)}</h3></div>
   </a>`;
 }
 
@@ -120,14 +108,14 @@ function matches(r) {
   if (filter.chip === "todo" && !r.noRecipe) return false;
   if (filter.chip && filter.chip !== "todo" && r.course !== filter.chip && !r.tags.includes(filter.chip)) return false;
   if (!filter.q) return true;
-  const hay = norm([r.title, r.author, ...r.ingredients.map((i) => i.text)].join(" "));
+  const hay = norm([r.title, r.author, ...r.ingredients.map((i) => i.name)].join(" "));
   return norm(filter.q).split(/\s+/).every((w) => hay.includes(w));
 }
 
 function chipsHtml() {
   const courses = COURSES.filter((c) => recipes.some((r) => r.course === c));
-  const tags = TAGS.filter((t) => recipes.some((r) => r.tags.includes(t)));
-  const items = [["", "All"], ...courses.map((c) => [c, COURSE_LABEL[c]]), ...tags.map((t) => [t, TAG_LABEL[t]])];
+  const tags = allTags({ tags: [] }).filter((t) => recipes.some((r) => r.tags.includes(t)));
+  const items = [["", "All"], ...courses.map((c) => [c, COURSE_LABEL[c]]), ...tags.map((t) => [t, tagLabel(t)])];
   if (recipes.some((r) => r.noRecipe)) items.push(["todo", "Needs text"]);
   if (items.length < 3) return "";
   return `<div class="chips" role="toolbar">${items
@@ -164,6 +152,9 @@ function renderHome() {
 
 // ---------- Detail ----------
 
+// The recipe being edited in place (null when just viewing).
+let editingId = null;
+
 function stepHtml(text) {
   let out = "";
   let pos = 0;
@@ -179,29 +170,76 @@ function countHtml(n, total) {
   return `<span class="count ${n === total && total ? "full" : ""}">${n}/${total}</span>`;
 }
 
-function renderDetail(r) {
-  document.title = r.title;
-  app.className = r.image ? "" : "no-hero";
-  let lastGroup = "";
-  const ings = r.ingredients
-    .map((ing, i) => {
-      let head = "";
-      if (ing.group && ing.group !== lastGroup) head = `<li class="group">${esc(ing.group)}</li>`;
-      lastGroup = ing.group || lastGroup;
-      return `${head}<li><button class="check-row" data-ing="${i}" aria-pressed="${r.have.includes(i)}"><span class="box">${icon("check")}</span><span class="txt">${esc(ing.text)}</span></button></li>`;
-    })
+function groupHead(ing, prev) {
+  return ing.group && ing.group !== (prev?.group || "") ? `<li class="group">${esc(ing.group)}</li>` : "";
+}
+
+function metaChipsHtml(r) {
+  const chips = [
+    r.servings && editingId !== r.id && `<span class="chip static">${icon("users")}${esc(r.servings)}</span>`,
+    r.course && `<button class="chip static accent" data-action="tags">${COURSE_LABEL[r.course]}</button>`,
+    ...r.tags.map((t) => `<button class="chip static" data-action="tags">${esc(tagLabel(t))}</button>`),
+    `<button class="chip static add" data-action="tags" aria-label="Edit tags">${icon("plus")}${r.tags.length || r.course ? "" : "Tag"}</button>`,
+  ].filter(Boolean);
+  return chips.join("");
+}
+
+function tagEditorHtml(r) {
+  const chip = (attr, value, label, on) => `<button type="button" class="chip" ${attr}="${esc(value)}" aria-pressed="${on}">${esc(label)}</button>`;
+  return `<div class="te-label">Course</div>
+    <div class="chip-pick">${COURSES.map((c) => chip("data-course", c, COURSE_LABEL[c], r.course === c)).join("")}</div>
+    <div class="te-label">Tags</div>
+    <div class="chip-pick">
+      ${allTags(r).map((t) => chip("data-tag", t, tagLabel(t), r.tags.includes(t))).join("")}
+      <span class="tag-add"><input id="new-tag" placeholder="New tag" enterkeyhint="done" autocomplete="off"><button type="button" data-action="add-tag" aria-label="Add tag">${icon("plus")}</button></span>
+    </div>`;
+}
+
+function ingredientsView(r) {
+  return r.ingredients
+    .map(
+      (ing, i) =>
+        `${groupHead(ing, r.ingredients[i - 1])}<li><button class="check-row" data-ing="${i}" aria-pressed="${r.have.includes(i)}"><span class="box">${icon("check")}</span><span class="txt">${esc(ing.name)}</span>${ing.qty ? `<span class="qty">${esc(ing.qty)}</span>` : ""}</button></li>`
+    )
     .join("");
-  const steps = r.steps
+}
+
+function ingredientsEdit(r) {
+  return (
+    r.ingredients
+      .map(
+        (ing, i) =>
+          `${groupHead(ing, r.ingredients[i - 1])}<li class="edit-row"><button class="del" data-action="del-ing" data-i="${i}" aria-label="Remove">${icon("x")}</button><input class="name-input" data-field="ing-name" data-i="${i}" value="${esc(ing.name)}" placeholder="Ingredient" enterkeyhint="next"><input class="qty-input" data-field="ing-qty" data-i="${i}" value="${esc(ing.qty)}" placeholder="Qty" enterkeyhint="next"></li>`
+      )
+      .join("") + `<li><button class="add-row" data-action="add-ing">${icon("plus")}Add ingredient</button></li>`
+  );
+}
+
+function stepsView(r) {
+  return r.steps
     .map(
       (s, i) =>
         `<li><div class="step" data-step="${i}" role="button" tabindex="0" aria-pressed="${r.done.includes(i)}"><span class="num"><span>${i + 1}</span>${icon("check")}</span><p>${stepHtml(s)}</p></div></li>`
     )
     .join("");
-  const chips = [
-    r.servings && `<span class="chip static">${icon("users")}${esc(r.servings)}</span>`,
-    r.course && `<span class="chip static accent">${COURSE_LABEL[r.course]}</span>`,
-    ...r.tags.map((t) => `<span class="chip static">${TAG_LABEL[t] || esc(t)}</span>`),
-  ].filter(Boolean);
+}
+
+function stepsEdit(r) {
+  return (
+    r.steps
+      .map(
+        (s, i) =>
+          `<li><div class="step editing"><span class="num"><span>${i + 1}</span></span><textarea data-field="step" data-i="${i}" rows="1" placeholder="Describe this step">${esc(s)}</textarea><button class="del" data-action="del-step" data-i="${i}" aria-label="Remove">${icon("x")}</button></div></li>`
+      )
+      .join("") + `<li><button class="add-row card-like" data-action="add-step">${icon("plus")}Add step</button></li>`
+  );
+}
+
+function renderDetail(r) {
+  const editing = editingId === r.id;
+  document.title = r.title;
+  app.className = r.image ? "" : "no-hero";
+  const hasLists = r.ingredients.length || r.steps.length;
 
   app.innerHTML = `
     <div class="hero">
@@ -209,37 +247,56 @@ function renderDetail(r) {
       <div class="hero-bar">
         <button class="glass" data-action="home" aria-label="Back">${icon("back")}</button>
         <div>
-          ${r.ingredients.length || r.steps.length ? `<button class="glass" data-action="reset" aria-label="Reset checklist">${icon("reset")}</button>` : ""}
+          ${
+            editing
+              ? `<button class="glass pill" data-action="done-edit">${icon("check")}Done</button>`
+              : `<button class="glass" data-action="edit" aria-label="Edit">${icon("edit")}</button>
+                 ${hasLists ? `<button class="glass" data-action="reset" aria-label="Reset checklist">${icon("reset")}</button>` : ""}`
+          }
           <button class="glass" data-action="more" aria-label="More">${icon("more")}</button>
         </div>
       </div>
     </div>
-    <article class="content">
-      <h1>${esc(r.title)}</h1>
+    <article class="content ${editing ? "is-editing" : ""}">
+      ${editing ? `<textarea class="edit-title" data-field="title" rows="1" placeholder="Recipe name">${esc(r.title)}</textarea>` : `<h1>${esc(r.title)}</h1>`}
       <div class="byline">
         ${r.author ? `<span>@${esc(r.author)}</span><span>·</span>` : ""}
         ${r.sourceUrl ? `<a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener">Open reel ${icon("external")}</a>` : ""}
       </div>
-      ${chips.length ? `<div class="meta-chips">${chips.join("")}</div>` : ""}
       ${
-        r.noRecipe
+        editing
+          ? `<label class="servings-edit">${icon("users")}<input data-field="servings" value="${esc(r.servings)}" placeholder="Servings (e.g. 4 personnes)"></label>
+             <div class="meta-chips">${metaChipsHtml(r)}</div>`
+          : `<div class="meta-chips">${metaChipsHtml(r)}</div>`
+      }
+      ${
+        r.noRecipe && !editing
           ? `<div class="banner"><strong>No recipe text found</strong>This reel's caption doesn't seem to contain the recipe (it may only be in the video).<br><button data-action="edit">Add it by hand</button></div>`
           : ""
       }
       ${
-        r.ingredients.length
-          ? `<div class="sec-head"><h2>Ingredients</h2><span id="ing-count">${countHtml(r.have.length, r.ingredients.length)}</span></div><ul class="checklist">${ings}</ul>`
+        r.ingredients.length || editing
+          ? `<div class="sec-head"><h2>Ingredients</h2><span id="ing-count">${editing ? "" : countHtml(r.have.length, r.ingredients.length)}</span></div>
+             <ul class="checklist">${editing ? ingredientsEdit(r) : ingredientsView(r)}</ul>`
           : ""
       }
       ${
-        r.steps.length
-          ? `<div class="sec-head"><h2>Steps</h2><span id="step-count">${countHtml(r.done.length, r.steps.length)}</span></div><ol class="steps">${steps}</ol>`
+        r.steps.length || editing
+          ? `<div class="sec-head"><h2>Steps</h2><span id="step-count">${editing ? "" : countHtml(r.done.length, r.steps.length)}</span></div>
+             <ol class="steps">${editing ? stepsEdit(r) : stepsView(r)}</ol>`
           : ""
       }
-      ${r.ingredients.length || r.steps.length ? `<button class="ghost-btn" data-action="reset">${icon("reset")}Reset checklist</button>` : ""}
+      ${hasLists && !editing ? `<button class="ghost-btn" data-action="reset">${icon("reset")}Reset checklist</button>` : ""}
+      ${editing && r.caption ? `<details class="caption"><summary>Original caption</summary><pre>${esc(r.caption)}</pre></details>` : ""}
     </article>`;
   app.dataset.id = r.id;
+  app.querySelectorAll("textarea").forEach(autosize);
   requestWakeLock();
+}
+
+function autosize(el) {
+  el.style.height = "auto";
+  el.style.height = el.scrollHeight + "px";
 }
 
 function toggle(r, key, index, el) {
@@ -276,84 +333,124 @@ function releaseWakeLock() {
   wakeLock = null;
 }
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && location.hash.startsWith("#/r/") && !location.hash.endsWith("/edit")) requestWakeLock();
+  if (document.visibilityState === "visible" && location.hash.startsWith("#/r/")) requestWakeLock();
   if (document.visibilityState === "visible") tickTimers();
 });
 
-// ---------- Edit ----------
+// ---------- Editing in place ----------
 
-function ingredientsToText(list) {
-  let group = "";
-  const lines = [];
-  for (const ing of list) {
-    if (ing.group && ing.group !== group) {
-      if (lines.length) lines.push("");
-      lines.push(`${ing.group}:`);
-      group = ing.group;
+let saveTimer;
+function saveSoon(r) {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => save(r), 400);
+}
+
+// Remove index i from a list of checked indices, shifting the ones after it.
+const dropIndex = (list, i) => list.filter((x) => x !== i).map((x) => (x > i ? x - 1 : x));
+
+function startEdit(r) {
+  editingId = r.id;
+  renderDetail(r);
+}
+
+function finishEdit(r) {
+  for (let i = r.ingredients.length - 1; i >= 0; i--) {
+    const ing = r.ingredients[i];
+    if (!ing.name.trim() && !ing.qty.trim()) {
+      r.ingredients.splice(i, 1);
+      r.have = dropIndex(r.have, i);
+    } else if (!ing.name.trim()) {
+      r.ingredients[i] = { ...ing, name: ing.qty, qty: "" };
     }
-    lines.push(ing.text);
   }
-  return lines.join("\n");
+  r.ingredients = r.ingredients.map(normalizeIngredient);
+  for (let i = r.steps.length - 1; i >= 0; i--) {
+    r.steps[i] = r.steps[i].trim();
+    if (!r.steps[i]) {
+      r.steps.splice(i, 1);
+      r.done = dropIndex(r.done, i);
+    }
+  }
+  r.title = r.title.trim() || "Untitled recipe";
+  r.servings = r.servings.trim();
+  r.noRecipe = !r.ingredients.length && !r.steps.length;
+  editingId = null;
+  clearTimeout(saveTimer);
+  save(r);
 }
 
-function textToIngredients(text) {
-  let group = "";
-  const out = [];
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (!line) continue;
-    if (line.endsWith(":") && line.length < 45) group = line.slice(0, -1).trim();
-    else out.push({ text: line.replace(/^[-•*]\s*/, ""), group });
-  }
-  return out;
+function onEditInput(r, el) {
+  const i = +el.dataset.i;
+  const field = el.dataset.field;
+  if (field === "title") r.title = el.value;
+  if (field === "servings") r.servings = el.value;
+  if (field === "ing-name") r.ingredients[i].name = el.value;
+  if (field === "ing-qty") r.ingredients[i].qty = el.value;
+  if (field === "step") r.steps[i] = el.value;
+  if (el.tagName === "TEXTAREA") autosize(el);
+  saveSoon(r);
 }
 
-function renderEdit(r) {
-  document.title = "Edit · " + r.title;
-  app.className = "";
-  const pick = (name, values, labels, selected, multi) =>
-    values
-      .map((v) => `<button type="button" class="chip" data-pick="${name}" data-multi="${multi}" data-value="${v}" aria-pressed="${multi ? selected.includes(v) : selected === v}">${labels[v]}</button>`)
-      .join("");
-  app.innerHTML = `<div class="page">
-    <div class="edit-top">
-      <button class="icon-btn" data-action="cancel-edit" aria-label="Cancel">${icon("x")}</button>
-      <h1>Edit recipe</h1>
-      <button class="save" data-action="save-edit">Save</button>
-    </div>
-    <form id="edit-form" autocomplete="off">
-      <label class="field"><span>Title</span><input class="input" name="title" value="${esc(r.title)}"></label>
-      <label class="field"><span>Servings</span><input class="input" name="servings" value="${esc(r.servings)}" placeholder="e.g. 4 people"></label>
-      <div class="field"><span>Course</span><div class="chip-pick">${pick("course", COURSES, COURSE_LABEL, r.course, false)}</div></div>
-      <div class="field"><span>Tags</span><div class="chip-pick">${pick("tags", TAGS, TAG_LABEL, r.tags, true)}</div></div>
-      <label class="field"><span>Ingredients</span><textarea class="input" name="ingredients" rows="10" placeholder="One per line">${esc(ingredientsToText(r.ingredients))}</textarea><small>One per line. A line ending with “:” starts a group (e.g. “Sauce:”).</small></label>
-      <label class="field"><span>Steps</span><textarea class="input" name="steps" rows="12" placeholder="One per line">${esc(r.steps.join("\n"))}</textarea><small>One step per line. Durations like “35 min” become timers.</small></label>
-      ${r.caption ? `<details class="caption"><summary>Original caption</summary><pre>${esc(r.caption)}</pre></details>` : ""}
-    </form>
-  </div>`;
+function addIngredient(r) {
+  r.ingredients.push({ qty: "", name: "", group: r.ingredients.at(-1)?.group || "" });
+  renderDetail(r);
+  $(`[data-field="ing-name"][data-i="${r.ingredients.length - 1}"]`)?.focus();
 }
 
-async function saveEdit(r) {
-  const f = $("#edit-form");
-  const picked = (name) => [...f.querySelectorAll(`[data-pick="${name}"][aria-pressed="true"]`)].map((b) => b.dataset.value);
-  const ingredients = textToIngredients(f.ingredients.value);
-  const steps = f.steps.value.split("\n").map((s) => s.trim()).filter(Boolean);
-  const changedLists = JSON.stringify(ingredients) !== JSON.stringify(r.ingredients) || JSON.stringify(steps) !== JSON.stringify(r.steps);
-  Object.assign(r, {
-    title: f.title.value.trim() || "Untitled recipe",
-    servings: f.servings.value.trim(),
-    course: picked("course")[0] || "",
-    tags: picked("tags"),
-    ingredients,
-    steps,
-    noRecipe: ingredients.length === 0 && steps.length === 0,
-  });
-  if (changedLists) {
-    r.have = [];
-    r.done = [];
-  }
-  await save(r);
-  location.replace(`#/r/${r.id}`);
+function addStep(r) {
+  r.steps.push("");
+  renderDetail(r);
+  $(`[data-field="step"][data-i="${r.steps.length - 1}"]`)?.focus();
+}
+
+// ---------- Tags ----------
+
+const tagLabel = (t) => TAG_LABEL[t] || t;
+
+// Preset tags first, then custom tags used by any recipe.
+function allTags(r) {
+  const custom = new Set();
+  for (const x of [...recipes, r]) for (const t of x.tags) if (!TAGS.includes(t)) custom.add(t);
+  return [...TAGS, ...[...custom].sort((a, b) => a.localeCompare(b))];
+}
+
+function refreshTags(r) {
+  save(r);
+  const sheet = $("#sheet-tags");
+  if (sheet) sheet.innerHTML = tagEditorHtml(r);
+  const row = $(".meta-chips");
+  if (row) row.innerHTML = metaChipsHtml(r);
+}
+
+function addTag(r) {
+  const input = $("#new-tag");
+  const value = input?.value.trim().replace(/\s+/g, " ");
+  if (!value) return input?.focus();
+  const known = allTags(r).find((t) => t.toLowerCase() === value.toLowerCase() || tagLabel(t).toLowerCase() === value.toLowerCase());
+  const tag = known || value;
+  if (!r.tags.includes(tag)) r.tags.push(tag);
+  refreshTags(r);
+  $("#new-tag")?.focus();
+}
+
+function openTagSheet(r) {
+  openSheet(
+    `<h2>Tags</h2><p class="sub">Tap to add or remove. Create your own below.</p>
+     <div class="tag-editor" id="sheet-tags">${tagEditorHtml(r)}</div>
+     <button class="primary" data-action="close-sheet" style="margin-top:22px">Done</button>`
+  );
+}
+
+// ---------- Ingredient order ----------
+
+/** Normalise, then sort by kind and amount, remapping the checked items. */
+function tidyIngredients(r) {
+  const sorted = sortIngredients(r.ingredients.map(normalizeIngredient));
+  const moved = new Map(sorted.map((k, n) => [k.index, n]));
+  r.have = (r.have || []).map((i) => moved.get(i)).filter((i) => i != null);
+  r.ingredients = sorted.map((k) => k.ing);
+  r.v = 2;
+  return r;
 }
 
 // ---------- Sheets ----------
@@ -447,6 +544,7 @@ async function doImport() {
       }
     }
     parsed ??= parseCaption(post.caption);
+    parsed.ingredients = tidyIngredients({ ingredients: parsed.ingredients }).ingredients;
     if (!post.caption) parsed.title = post.author ? `Reel by @${post.author}` : "Untitled recipe";
 
     const recipe = {
@@ -461,6 +559,7 @@ async function doImport() {
       ...parsed,
       have: [],
       done: [],
+      v: 2,
     };
     await save(recipe);
     closeSheet();
@@ -493,6 +592,7 @@ async function reparseWithAi(r) {
   try {
     const parsed = await aiParse(r.caption, settings.apiKey);
     Object.assign(r, parsed, { parser: "ai", have: [], done: [] });
+    tidyIngredients(r);
     await save(r);
     closeSheet();
     renderDetail(r);
@@ -547,6 +647,7 @@ async function importBackup(e) {
     let added = 0;
     for (const r of list) {
       if (!r?.id || !Array.isArray(r.ingredients) || byId(r.id)) continue;
+      if ((r.v || 1) < 2) tidyIngredients(r);
       await db.put(r);
       recipes.push(r);
       added++;
@@ -668,12 +769,16 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
-  const pick = e.target.closest("[data-pick]");
-  if (pick) {
-    const on = pick.getAttribute("aria-pressed") !== "true";
-    if (pick.dataset.multi === "false") pick.parentElement.querySelectorAll("[data-pick]").forEach((b) => b.setAttribute("aria-pressed", "false"));
-    pick.setAttribute("aria-pressed", String(on));
-    return;
+  const course = e.target.closest("[data-course]");
+  if (course && current) {
+    current.course = current.course === course.dataset.course ? "" : course.dataset.course;
+    return refreshTags(current);
+  }
+  const tag = e.target.closest("[data-tag]");
+  if (tag && current) {
+    const t = tag.dataset.tag;
+    current.tags = current.tags.includes(t) ? current.tags.filter((x) => x !== t) : [...current.tags, t];
+    return refreshTags(current);
   }
 
   const tchip = e.target.closest(".tchip");
@@ -729,7 +834,44 @@ document.addEventListener("click", async (e) => {
       if (current) openMore(current);
       break;
     case "edit":
-      if (current) location.hash = `#/r/${current.id}/edit`;
+      if (current) {
+        closeSheet();
+        startEdit(current);
+      }
+      break;
+    case "done-edit":
+      if (current) {
+        finishEdit(current);
+        renderDetail(current);
+      }
+      break;
+    case "del-ing":
+      if (current) {
+        current.ingredients.splice(+el.dataset.i, 1);
+        current.have = dropIndex(current.have, +el.dataset.i);
+        saveSoon(current);
+        renderDetail(current);
+      }
+      break;
+    case "add-ing":
+      if (current) addIngredient(current);
+      break;
+    case "del-step":
+      if (current) {
+        current.steps.splice(+el.dataset.i, 1);
+        current.done = dropIndex(current.done, +el.dataset.i);
+        saveSoon(current);
+        renderDetail(current);
+      }
+      break;
+    case "add-step":
+      if (current) addStep(current);
+      break;
+    case "tags":
+      if (current) openTagSheet(current);
+      break;
+    case "add-tag":
+      if (current) addTag(current);
       break;
     case "reparse":
       if (current) reparseWithAi(current);
@@ -740,12 +882,6 @@ document.addEventListener("click", async (e) => {
         recipes = recipes.filter((r) => r !== current);
         location.replace("#/");
       }
-      break;
-    case "cancel-edit":
-      if (current) location.replace(`#/r/${current.id}`);
-      break;
-    case "save-edit":
-      if (current) saveEdit(current);
       break;
     case "save-settings":
       settings.workerUrl = $("#s-worker").value;
@@ -762,7 +898,25 @@ document.addEventListener("click", async (e) => {
   }
 });
 
+document.addEventListener("input", (e) => {
+  const r = byId(app.dataset.id);
+  if (r && editingId === r.id && e.target.dataset.field) onEditInput(r, e.target);
+});
+
 document.addEventListener("keydown", (e) => {
+  const r = byId(app.dataset.id);
+  if (e.key === "Enter" && e.target.id === "new-tag" && r) {
+    e.preventDefault();
+    return addTag(r);
+  }
+  // Enter in an ingredient jumps to the next one, or adds a new row after the last.
+  if (e.key === "Enter" && r && /^ing-/.test(e.target.dataset.field || "")) {
+    e.preventDefault();
+    const next = $(`[data-field="ing-name"][data-i="${+e.target.dataset.i + 1}"]`);
+    if (next) next.focus();
+    else addIngredient(r);
+    return;
+  }
   if (e.key === "Escape") closeSheet();
   if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-step]")) {
     e.preventDefault();
@@ -774,6 +928,7 @@ document.addEventListener("keydown", (e) => {
 
 async function start() {
   recipes = (await db.all()).sort((a, b) => b.createdAt - a.createdAt);
+  for (const r of recipes) if ((r.v || 1) < 2) db.put(tidyIngredients(r));
   route();
   tickTimers();
 
