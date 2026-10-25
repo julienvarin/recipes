@@ -27,11 +27,13 @@ You can add the text by hand.
 
 ## Setup
 
-1. **Worker.** In the Cloudflare dashboard, go to Workers & Pages → Create → Worker. Paste
-   [`worker/worker.js`](worker/worker.js), deploy it, and copy its `https://….workers.dev` URL.
+1. **Worker.** In the Cloudflare dashboard, go to Workers & Pages → Create → Import a repository, then pick this repo.
+   Use the project name `recipes` (it matches `wrangler.jsonc`), leave the build command empty and keep
+   `npx wrangler deploy`. After that, every push to `main` redeploys the Worker automatically. Its URL is
+   `https://recipes.<your-subdomain>.workers.dev`.
    If the app is not served from `https://julienvarin.github.io`, add your address to `ALLOWED_ORIGINS`.
 2. **App.** In the GitHub repo, go to Settings → Pages → Build and deployment. Choose Source “Deploy from a branch”,
-   then `main` and `/ (root)`. The app is served at `https://julienvarin.github.io/recipes/`.
+   then `main` and `/ (root)`. Every push to `main` republishes `https://julienvarin.github.io/recipes/`.
 3. **Phone.** Open the app. On iPhone, open it in Safari and tap Share → *Add to Home Screen*;
    on Android, use Chrome → *Install app*. Then open **Settings** in the app and paste the Worker URL.
 4. **Optional AI.** Create an API key at [console.anthropic.com](https://console.anthropic.com).
