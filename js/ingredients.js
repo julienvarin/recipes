@@ -149,3 +149,21 @@ export function blockOf(name) {
   const rank = kindRank(name);
   return rank <= 2 ? 0 : rank <= 5 ? 1 : 2;
 }
+
+// ---- Pantry staples ----
+// Salt, pepper and cooking oil are always at home, so they are left off the list unless
+// they are a measured part of the dish (a dressing, sauce, dough or batter).
+
+const STAPLE_SALT_PEPPER = /^(?:(?:gros |fleur de |fine )?sel|salt|sea salt|kosher salt|poivre(?: noir)?|black pepper|pepper|sel(?:,| et) poivre|salt(?:,| and| &) pepper|sel & poivre)(?:\s+(?:du moulin|fraîchement moulu|freshly ground|to taste|au goût|selon votre goût))?$/i;
+const STAPLE_OIL = /^(?:huile(?: d['’]olive| neutre| végétale| de tournesol| de colza)?|(?:extra virgin |vegetable |neutral |sunflower |canola )?(?:olive )?oil|cooking oil)$/i;
+const MEASURED = /^\S+\s+(?:g|kg|ml|cl|dl|L|càs|càc|tbsp|tsp|cups?|oz)$/;
+
+export function isStaple(ing, course = "") {
+  const name = String(ing.name || "").replace(/\s+/g, " ").trim();
+  if (STAPLE_SALT_PEPPER.test(name)) {
+    // Weighed salt matters in baking and doughs; a pinch to season does not.
+    return !(/\d\s*g$/.test(ing.qty || "") || ((course === "dessert" || course === "breakfast") && ing.qty));
+  }
+  if (STAPLE_OIL.test(name)) return !MEASURED.test(ing.qty || "");
+  return false;
+}

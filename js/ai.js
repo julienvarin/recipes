@@ -6,17 +6,18 @@ const MODEL = "claude-haiku-5-5";
 const PRICE = { input: 0.1 / 1e6, output: 0.5 / 1e6 };
 
 export const COURSES = ["main", "starter", "dessert", "side", "breakfast", "snack", "drink", "sauce"];
-export const TAGS = ["oven", "stovetop", "air-fryer", "no-cook", "resting", "freezer", "quick", "vegetarian", "vegan"];
+export const TAGS = ["oven", "stovetop", "no-cook", "resting", "freezer", "vegetarian", "vegan"];
 
 const SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["has_recipe", "title", "language", "servings", "course", "tags", "ingredients", "steps"],
+  required: ["has_recipe", "title", "language", "servings", "total_minutes", "course", "tags", "ingredients", "steps"],
   properties: {
     has_recipe: { type: "boolean", description: "false if the caption contains no usable recipe" },
     title: { type: "string" },
     language: { type: "string", enum: ["en", "fr"] },
     servings: { type: "string", description: 'e.g. "4 personnes", "2 servings", or ""' },
+    total_minutes: { type: "integer", description: "estimated time from start to plate, including cooking and resting; 0 if there is no recipe" },
     course: { type: "string", enum: [...COURSES, ""] },
     tags: { type: "array", items: { type: "string", enum: TAGS } },
     ingredients: {
@@ -27,7 +28,7 @@ const SCHEMA = {
         required: ["qty", "name", "group"],
         properties: {
           qty: { type: "string", description: 'amount with a short unit, e.g. "300 g", "½ càs", "2", or ""' },
-          name: { type: "string", description: 'ingredient, capitalised, without "de"/"of", e.g. "Lentilles cuites"' },
+          name: { type: "string", description: 'what to buy, short and capitalised, without "de"/"of", e.g. "Lentilles cuites", "Beurre de cacahuète"' },
           group: { type: "string", description: 'sub-list name such as "Sauce", or ""' },
         },
       },
@@ -41,10 +42,13 @@ const SYSTEM = `You turn an Instagram recipe caption into a quick-reference reci
 Rules:
 - Write in the caption's language: a French caption gives a French card, an English caption an English card. Never translate.
 - title: short dish name, no emojis.
-- ingredients: one item each, concise, no emojis. Keep every ingredient. qty uses short units: g, kg, ml, cl, L, càs (cuillère à soupe), càc (cuillère à café), pincée for French; g, ml, tbsp, tsp, cup, pinch for English; fractions as ½ ¼ ¾. Use group only when the caption splits ingredients into parts (dough, sauce...).
-- steps: short, simple, imperative steps that are easy to follow while cooking. Usually 4-10 steps, one or two actions each, at most ~25 words. Keep every quantity, temperature and duration exactly (write durations like "35 min", "1 h"). Drop chit-chat, promotions, hashtags and emojis.
+- ingredients: one item each, no emojis. name is only what to buy: drop quality and marketing words ("de bonne qualité", "good quality", "bio", "organic", "homemade"), brands, prep notes ("finely chopped", "à température ambiante") and optional asides. Keep a word only when it changes what you buy (e.g. "smoked" paprika, "cooked" lentils, "dark" chocolate).
+- Leave out salt, pepper and cooking oil: the cook always has them. Keep them only when a measured amount is part of the dish itself (oil in a dressing, sauce, marinade, dough or batter; salt weighed for bread or pastry). Never leave out any other ingredient.
+- qty uses short units: g, kg, ml, cl, L, càs (cuillère à soupe), càc (cuillère à café), pincée for French; g, ml, tbsp, tsp, cup, pinch for English; fractions as ½ ¼ ¾. Use group only when the caption splits ingredients into parts (dough, sauce...).
+- steps: what to do, nothing else. Short, imperative, easy to follow at a glance while cooking: usually 4-8 steps, one or two actions each, at most ~20 words. Merge small actions that happen together, cut obvious or empty steps ("enjoy", "gather your ingredients", "serve and share"), and drop chit-chat, promotions, hashtags and emojis. Keep every quantity, temperature and duration exactly (write durations like "35 min", "1 h").
+- total_minutes: your best estimate of the whole time, preparation plus cooking plus any resting. Use the durations in the caption when given; otherwise estimate from the steps.
 - course: the kind of dish, or "" if unclear.
-- tags: only those clearly supported by the recipe ("resting" = any resting, chilling, marinating or rising time; "quick" = about 20 minutes or less in total).
+- tags: only those clearly supported by the recipe ("oven" = baked or roasted in the oven; "stovetop" = cooked in a pan or pot; "resting" = any resting, chilling, marinating or rising time).
 - If the caption has no real recipe (for example the recipe is only in the video), set has_recipe to false and leave the lists empty.`;
 
 let clientPromise;
@@ -76,6 +80,7 @@ export async function aiParse(caption, apiKey) {
     title: data.title,
     lang: data.language,
     servings: data.servings,
+    totalMinutes: data.total_minutes > 0 ? data.total_minutes : 0,
     course: data.course,
     tags: data.tags,
     ingredients: data.ingredients,

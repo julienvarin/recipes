@@ -36,3 +36,16 @@ test("blocks: base, rest, basics", async () => {
   const { blockOf } = await import("../js/ingredients.js");
   assert.deepEqual(["Poulet", "Carottes", "Riz", "Feta", "Sucre", "Huile d'olive", "Sel", "Basilic"].map(blockOf), [0, 0, 0, 1, 1, 2, 2, 2]);
 });
+
+test("salt, pepper and cooking oil are dropped unless measured into the dish", async () => {
+  const { isStaple } = await import("../js/ingredients.js");
+  const drop = (name, qty, course) => isStaple({ name, qty }, course);
+  assert.equal(drop("Sel", "½ càc"), true);
+  assert.equal(drop("Sel, poivre", ""), true);
+  assert.equal(drop("Huile d’olive", "1 filet"), true);
+  assert.equal(drop("Olive oil", ""), true);
+  assert.equal(drop("Huile d’olive", "4 cl"), false); // part of the dressing
+  assert.equal(drop("Sel", "10 g"), false); // weighed for bread
+  assert.equal(drop("Sel", "1 pincée", "dessert"), false);
+  assert.equal(drop("Huile de sésame", ""), false); // a flavour, not a staple
+});

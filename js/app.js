@@ -1,7 +1,7 @@
 import { db } from "./db.js";
 import { parseCaption, findDurations } from "./parse.js";
 import { aiParse, COURSES, TAGS } from "./ai.js";
-import { normalizeIngredient, sortIngredients, blockOf } from "./ingredients.js";
+import { normalizeIngredient, sortIngredients, blockOf, isStaple } from "./ingredients.js";
 
 // ---------- Small helpers ----------
 
@@ -30,6 +30,7 @@ const ICON = {
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>',
   redo: '<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   users: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><path d="M16 4.5a3 3 0 0 1 0 6M21 20c0-2.6-1.6-4.6-4-5.3"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   upload: '<path d="M12 20V9M7 14l5-5 5 5M5 4h14"/>',
@@ -37,7 +38,25 @@ const ICON = {
 const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
 
 const COURSE_LABEL = { main: "Main", starter: "Starter", dessert: "Dessert", side: "Side", breakfast: "Breakfast", snack: "Snack", drink: "Drink", sauce: "Sauce" };
-const TAG_LABEL = { oven: "Oven", stovetop: "Stovetop", "air-fryer": "Air fryer", "no-cook": "No cook", resting: "Resting", freezer: "Freezer", quick: "Quick", vegetarian: "Vegetarian", vegan: "Vegan" };
+const TAG_LABEL = { oven: "Oven", stovetop: "Stove", "no-cook": "No cook", resting: "Resting", freezer: "Freezer", vegetarian: "Vegetarian", vegan: "Vegan" };
+const RETIRED_TAGS = ["air-fryer", "quick"];
+
+/** 45 -> "45 min", 90 -> "1 h 30" */
+function formatMinutes(m) {
+  if (!m) return "";
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return h ? `${h} h${rest ? " " + String(rest).padStart(2, "0") : ""}` : `${m} min`;
+}
+
+/** "45", "1h30", "1 h 30", "90 min" -> minutes */
+function parseMinutes(text) {
+  const t = String(text || "").trim();
+  if (/^\d+$/.test(t)) return +t;
+  const hm = t.match(/^(\d+)\s*h\s*(\d+)?/i);
+  if (hm) return +hm[1] * 60 + (+hm[2] || 0);
+  return Math.round(findDurations(t).reduce((n, d) => n + d.seconds, 0) / 60);
+}
 
 const settings = {
   get workerUrl() { return localStorage.getItem("workerUrl") || ""; },
@@ -106,7 +125,8 @@ function cardHtml(r) {
 
 function matches(r) {
   if (filter.chip === "todo" && !r.noRecipe) return false;
-  if (filter.chip && filter.chip !== "todo" && r.course !== filter.chip && !r.tags.includes(filter.chip)) return false;
+  if (filter.chip === "under30" && !(r.totalMinutes > 0 && r.totalMinutes <= 30)) return false;
+  if (filter.chip && !["todo", "under30"].includes(filter.chip) && r.course !== filter.chip && !r.tags.includes(filter.chip)) return false;
   if (!filter.q) return true;
   const hay = norm([r.title, r.author, ...r.ingredients.map((i) => i.name)].join(" "));
   return norm(filter.q).split(/\s+/).every((w) => hay.includes(w));
@@ -116,6 +136,7 @@ function chipsHtml() {
   const courses = COURSES.filter((c) => recipes.some((r) => r.course === c));
   const tags = allTags({ tags: [] }).filter((t) => recipes.some((r) => r.tags.includes(t)));
   const items = [["", "All"], ...courses.map((c) => [c, COURSE_LABEL[c]]), ...tags.map((t) => [t, tagLabel(t)])];
+  if (recipes.some((r) => r.totalMinutes > 0 && r.totalMinutes <= 30)) items.splice(1, 0, ["under30", "Under 30 min"]);
   if (recipes.some((r) => r.noRecipe)) items.push(["todo", "Needs text"]);
   if (items.length < 3) return "";
   return `<div class="chips" role="toolbar">${items
@@ -176,6 +197,7 @@ function groupHead(ing, prev) {
 
 function metaChipsHtml(r) {
   const chips = [
+    r.totalMinutes > 0 && editingId !== r.id && `<span class="chip static">${icon("clock")}${formatMinutes(r.totalMinutes)}</span>`,
     r.servings && editingId !== r.id && `<span class="chip static">${icon("users")}${esc(r.servings)}</span>`,
     r.course && `<button class="chip static" data-action="tags">${COURSE_LABEL[r.course]}</button>`,
     ...r.tags.map((t) => `<button class="chip static" data-action="tags">${esc(tagLabel(t))}</button>`),
@@ -276,7 +298,10 @@ function renderDetail(r) {
       </div>
       ${
         editing
-          ? `<label class="servings-edit">${icon("users")}<input data-field="servings" value="${esc(r.servings)}" placeholder="Servings (e.g. 4 personnes)"></label>
+          ? `<div class="row-2 meta-edit">
+               <label class="servings-edit">${icon("clock")}<input data-field="time" value="${esc(formatMinutes(r.totalMinutes))}" placeholder="Total time" inputmode="text"></label>
+               <label class="servings-edit">${icon("users")}<input data-field="servings" value="${esc(r.servings)}" placeholder="Servings"></label>
+             </div>
              <div class="meta-chips">${metaChipsHtml(r)}</div>`
           : `<div class="meta-chips">${metaChipsHtml(r)}</div>`
       }
@@ -307,16 +332,16 @@ function renderDetail(r) {
 }
 
 // ---------- Picture picker ----------
-// Swipe between the reel's screenshots, three framings of the cover when there are
-// no screenshots, and photos picked from the phone. The slide in view is the picture.
+// Swipe between the reel's cover, screenshots of the reel, and photos picked from the
+// phone. Picking a video (the reel saved or screen-recorded) adds screenshots of it.
+// The slide in view is the picture.
 
 function imageChoices(r) {
   const center = "50% 50%";
   const cover = r.cover || (r.photos?.includes(r.image) ? "" : r.image);
   const list = [];
   if (cover) {
-    if (r.frames?.length) list.push({ src: cover, pos: center });
-    else for (const pos of ["50% 12%", center, "50% 88%"]) list.push({ src: cover, pos });
+    list.push({ src: cover, pos: center });
   }
   for (const src of [...(r.frames || []), ...(r.photos || [])]) list.push({ src, pos: center });
   return list;
@@ -326,7 +351,7 @@ function pickerHtml(r, choices) {
   const slides = choices.map((c) => `<div class="slide"><img src="${c.src}" alt="" style="object-position:${c.pos}"></div>`).join("");
   const dots = choices.length ? `<div class="dots">${choices.map(() => "<i></i>").join("")}<i class="add"></i></div>` : "";
   return `<div class="slides" id="slides">${slides}
-      <label class="slide add-photo">${icon("image")}<span>Choose a photo</span><input type="file" accept="image/*" id="photo-input" hidden></label>
+      <label class="slide add-photo">${icon("image")}<span>Choose a photo or video</span><input type="file" accept="image/*,video/*" id="photo-input" hidden></label>
     </div>${dots}`;
 }
 
@@ -357,11 +382,21 @@ function mountPicker(r, choices) {
   $("#photo-input").addEventListener("change", async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const src = await imageToDataUrl(file).catch(() => "");
-    if (!src) return toast("Couldn’t open that photo");
     r.cover ??= r.image || "";
-    r.photos = [...(r.photos || []), src];
-    r.image = src;
+    if (file.type.startsWith("video/")) {
+      toast("Taking screenshots…");
+      const url = URL.createObjectURL(file);
+      const frames = await videoFrames(url, [0.1, 0.3, 0.5, 0.7, 0.9]).catch(() => []);
+      URL.revokeObjectURL(url);
+      if (!frames.length) return toast("Couldn’t read that video");
+      r.frames = [...(r.frames || []), ...frames];
+      r.image = frames[0];
+    } else {
+      const src = await imageToDataUrl(file).catch(() => "");
+      if (!src) return toast("Couldn’t open that photo");
+      r.photos = [...(r.photos || []), src];
+      r.image = src;
+    }
     r.imagePos = "50% 50%";
     saveSoon(r);
     renderDetail(r);
@@ -458,6 +493,7 @@ function onEditInput(r, el) {
   const field = el.dataset.field;
   if (field === "title") r.title = el.value;
   if (field === "servings") r.servings = el.value;
+  if (field === "time") r.totalMinutes = parseMinutes(el.value);
   if (field === "ing-name") r.ingredients[i].name = el.value;
   if (field === "ing-qty") r.ingredients[i].qty = el.value;
   if (field === "step") r.steps[i] = el.value;
@@ -516,13 +552,15 @@ function openTagSheet(r) {
 
 // ---------- Ingredient order ----------
 
-/** Normalise, then sort by kind and amount, remapping the checked items. */
+/** Normalise, drop salt/pepper/oil staples, then sort by kind and amount, remapping the checked items. */
 function tidyIngredients(r) {
-  const sorted = sortIngredients(r.ingredients.map(normalizeIngredient));
-  const moved = new Map(sorted.map((k, n) => [k.index, n]));
+  const kept = r.ingredients.map(normalizeIngredient).map((ing, index) => ({ ing, index })).filter(({ ing }) => !isStaple(ing, r.course));
+  const sorted = sortIngredients(kept.map((k) => k.ing));
+  const moved = new Map(sorted.map((k, n) => [kept[k.index].index, n]));
   r.have = (r.have || []).map((i) => moved.get(i)).filter((i) => i != null);
   r.ingredients = sorted.map((k) => k.ing);
-  r.v = 2;
+  r.tags = (r.tags || []).filter((t) => !RETIRED_TAGS.includes(t));
+  r.v = 3;
   return r;
 }
 
@@ -621,7 +659,8 @@ async function doImport() {
       }
     }
     parsed ??= parseCaption(post.caption);
-    parsed.ingredients = tidyIngredients({ ingredients: parsed.ingredients }).ingredients;
+    const tidy = tidyIngredients({ ingredients: parsed.ingredients, course: parsed.course, tags: parsed.tags });
+    Object.assign(parsed, { ingredients: tidy.ingredients, tags: tidy.tags });
     if (!post.caption) parsed.title = post.author ? `Reel by @${post.author}` : "Untitled recipe";
 
     const recipe = {
@@ -640,7 +679,7 @@ async function doImport() {
       ...parsed,
       have: [],
       done: [],
-      v: 2,
+      v: 3,
     };
     if (aiCost) {
       recordCost(recipe, aiCost);
@@ -820,7 +859,7 @@ async function importBackup(e) {
     let added = 0;
     for (const r of list) {
       if (!r?.id || !Array.isArray(r.ingredients) || byId(r.id)) continue;
-      if ((r.v || 1) < 2) tidyIngredients(r);
+      if ((r.v || 1) < 3) tidyIngredients(r);
       await db.put(r);
       recipes.push(r);
       added++;
@@ -1102,7 +1141,7 @@ document.addEventListener("keydown", (e) => {
 
 async function start() {
   recipes = (await db.all()).sort((a, b) => b.createdAt - a.createdAt);
-  for (const r of recipes) if ((r.v || 1) < 2) db.put(tidyIngredients(r));
+  for (const r of recipes) if ((r.v || 1) < 3) db.put(tidyIngredients(r));
   route();
   tickTimers();
 

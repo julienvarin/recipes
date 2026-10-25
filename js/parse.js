@@ -103,7 +103,7 @@ export function detectCourseAndTags(text, ingredientCount) {
 
   const tags = [];
   if (/(?<![\p{L}])(four|oven|enfourne|enfournez|bake|baking|baked|th\.?\s?\d)(?![\p{L}])|\d\s?°\s?[cf]/iu.test(t)) tags.push("oven");
-  if (kw("air ?fryer|airfryer").test(t)) tags.push("air-fryer");
+  if (kw("poêle|poele|casserole|sauteuse|wok|faire revenir|faites revenir|rissoler|mijoter|frying pan|skillet|saucepan|pot|simmer|sauté|saute|stir-fry|bring to a boil|portez à ébullition").test(t)) tags.push("stovetop");
   if (kw("repos|reposer|laisse[rz]? reposer|frigo|réfrigérateur|refrigerate|refrigerator|fridge|overnight|toute la nuit|une nuit|chill|chilling|let (?:it )?rest|rest for|resting|mariner|marinate|marinade|laisse[rz]? lever|laisser pousser|rise|proof|prove").test(t)) tags.push("resting");
   if (kw("congélateur|congelateur|freezer|freeze|congeler").test(t)) tags.push("freezer");
   const cooks = kw("four|oven|cuire|cuisson|poêle|poele|casserole|bouillir|faire revenir|revenir|rissoler|cook|cooking|fry|fried|boil|simmer|roast|roasted|rôti|rôties|bake|grill|griller|micro-ondes|microwave|sauté|saute|air ?fryer|wok|plancha|mijoter").test(t);
