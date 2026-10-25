@@ -1,7 +1,9 @@
 // Cloudflare Worker: tiny relay between the recipe app and Instagram.
 //
-//   GET /?url=<instagram reel or post url>  -> { shortcode, url, author, caption, image }
-//   GET /img?u=<instagram cdn image url>    -> the image bytes (so the app can store it)
+//   GET /?url=<instagram reel or post url>  -> { shortcode, url, author, caption, image, video }
+//   GET /img?u=<instagram cdn url>          -> the image or video bytes (so the app can use them)
+//
+// `video` is only there when Instagram shares the file publicly (often not for reels with music).
 //
 // It only talks to instagram.com and Instagram's image CDN.
 
@@ -21,6 +23,7 @@ export default {
     const cors = {
       "Access-Control-Allow-Origin": ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
       "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Headers": "Range",
       Vary: "Origin",
     };
     if (request.method === "OPTIONS") return new Response(null, { headers: cors });
@@ -28,11 +31,12 @@ export default {
 
     const url = new URL(request.url);
     try {
-      if (url.pathname === "/img") return await proxyImage(url.searchParams.get("u"), cors);
+      if (url.pathname === "/img") return await proxyMedia(url.searchParams.get("u"), request, cors);
       const target = url.searchParams.get("url");
       if (!target) return json({ ok: true, usage: "GET /?url=<instagram reel url>" }, 200, cors);
       const post = await fetchPost(target);
       if (post.image) post.image = `${url.origin}/img?u=${encodeURIComponent(post.image)}`;
+      if (post.video) post.video = `${url.origin}/img?u=${encodeURIComponent(post.video)}`;
       return json(post, 200, cors);
     } catch (err) {
       return json({ error: err.message || String(err) }, err.status || 500, cors);
@@ -64,6 +68,7 @@ export function parseEmbed(html) {
   let caption = "";
   let author = "";
   let image = "";
+  let video = "";
 
   // Preferred source: the JSON blob the embed page ships with.
   const m = html.match(/"contextJSON":("(?:[^"\\]|\\.)*")/);
@@ -74,6 +79,7 @@ export function parseEmbed(html) {
         caption = media.edge_media_to_caption?.edges?.[0]?.node?.text || "";
         author = media.owner?.username || "";
         image = media.display_url || media.thumbnail_src || "";
+        video = media.video_url || "";
       }
     } catch {
       // fall through to the HTML fallback
@@ -93,22 +99,31 @@ export function parseEmbed(html) {
     const i = html.match(/class="EmbeddedMediaImage"[^>]*?src="([^"]+)"/);
     if (i) image = decodeEntities(i[1]);
   }
-  return { author, caption, image };
+  return { author, caption, image, video };
 }
 
-async function proxyImage(u, cors) {
+async function proxyMedia(u, request, cors) {
   let host;
   try {
     host = new URL(u).hostname;
   } catch {
     throw httpError("Bad image url", 400);
   }
-  if (!/(^|\.)(cdninstagram\.com|fbcdn\.net)$/.test(host)) throw httpError("Image host not allowed", 400);
-  const res = await fetch(u, { headers: { "User-Agent": UA } });
-  if (!res.ok) throw httpError(`Image fetch failed (${res.status})`, 502);
-  return new Response(res.body, {
-    headers: { ...cors, "Content-Type": res.headers.get("Content-Type") || "image/jpeg", "Cache-Control": "public, max-age=86400" },
-  });
+  if (!/(^|\.)(cdninstagram\.com|fbcdn\.net)$/.test(host)) throw httpError("Media host not allowed", 400);
+  // Forward Range so a <video> element can seek without downloading the whole file.
+  const headers = { "User-Agent": UA };
+  const range = request.headers.get("Range");
+  if (range) headers.Range = range;
+  const res = await fetch(u, { headers });
+  if (!res.ok) throw httpError(`Media fetch failed (${res.status})`, 502);
+  const out = {
+    ...cors,
+    "Content-Type": res.headers.get("Content-Type") || "image/jpeg",
+    "Cache-Control": "public, max-age=86400",
+    "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
+  };
+  for (const h of ["Content-Length", "Content-Range", "Accept-Ranges"]) if (res.headers.get(h)) out[h] = res.headers.get(h);
+  return new Response(res.body, { status: res.status, headers: out });
 }
 
 function decodeEntities(s) {

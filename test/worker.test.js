@@ -19,7 +19,7 @@ test("shortcode from various links", () => {
 });
 
 test("parses the embed JSON", () => {
-  assert.deepEqual(parseEmbed(embedHtml), { author: "chef", caption: media.edge_media_to_caption.edges[0].node.text, image: media.display_url });
+  assert.deepEqual(parseEmbed(embedHtml), { author: "chef", caption: media.edge_media_to_caption.edges[0].node.text, image: media.display_url, video: "" });
 });
 
 test("falls back to the rendered caption", () => {
@@ -46,4 +46,21 @@ test("worker rejects other sites and other image hosts", async () => {
   assert.equal(bad.status, 403);
   const img = await worker.fetch(new Request("https://relay.example/img?u=" + encodeURIComponent("https://evil.example/a.jpg")));
   assert.equal(img.status, 400);
+});
+
+test("video url is passed through the media proxy when Instagram shares it", async (t) => {
+  const withVideo = embedHtml.replace(JSON.stringify(JSON.stringify({ gql_data: { shortcode_media: media } })), JSON.stringify(JSON.stringify({ gql_data: { shortcode_media: { ...media, video_url: "https://scontent.cdninstagram.com/v/clip.mp4" } } })));
+  t.mock.method(globalThis, "fetch", async () => new Response(withVideo));
+  const body = await (await worker.fetch(new Request("https://relay.example/?url=https://www.instagram.com/reel/ABC123/"))).json();
+  assert.equal(body.video, `https://relay.example/img?u=${encodeURIComponent("https://scontent.cdninstagram.com/v/clip.mp4")}`);
+});
+
+test("media proxy forwards Range for video seeking", async (t) => {
+  t.mock.method(globalThis, "fetch", async (_url, init) => {
+    assert.equal(init.headers.Range, "bytes=0-99");
+    return new Response("x".repeat(100), { status: 206, headers: { "Content-Type": "video/mp4", "Content-Range": "bytes 0-99/5000", "Accept-Ranges": "bytes" } });
+  });
+  const res = await worker.fetch(new Request("https://relay.example/img?u=" + encodeURIComponent("https://scontent.cdninstagram.com/v/clip.mp4"), { headers: { Range: "bytes=0-99" } }));
+  assert.equal(res.status, 206);
+  assert.equal(res.headers.get("content-range"), "bytes 0-99/5000");
 });

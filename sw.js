@@ -1,6 +1,6 @@
 // Offline support. The app shell is fetched network-first (so an update is never mixed with
 // stale files) and falls back to the cache when offline.
-const CACHE = "recipes-v5";
+const CACHE = "recipes-v6";
 const SHELL = ["./", "index.html", "css/app.css", "js/app.js", "js/db.js", "js/parse.js", "js/ingredients.js", "js/ai.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {

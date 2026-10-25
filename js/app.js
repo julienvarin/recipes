@@ -28,6 +28,7 @@ const ICON = {
   play: '<path d="M7 5l12 7-12 7z"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>',
   redo: '<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>',
   users: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><path d="M16 4.5a3 3 0 0 1 0 6M21 20c0-2.6-1.6-4.6-4-5.3"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
@@ -42,6 +43,8 @@ const settings = {
   get workerUrl() { return localStorage.getItem("workerUrl") || ""; },
   set workerUrl(v) { localStorage.setItem("workerUrl", v.trim().replace(/\/+$/, "")); },
   get apiKey() { return localStorage.getItem("apiKey") || ""; },
+  get credit() { return parseFloat(localStorage.getItem("aiCredit")) || 0; },
+  set credit(v) { localStorage.setItem("aiCredit", String(parseFloat(String(v).replace(",", ".")) || "")); },
   set apiKey(v) { localStorage.setItem("apiKey", v.trim()); },
 };
 
@@ -94,9 +97,7 @@ window.addEventListener("hashchange", () => {
 // ---------- Home ----------
 
 function cardHtml(r) {
-  const img = r.image
-    ? `<img src="${r.image}" alt="" loading="lazy">`
-    : "";
+  const img = r.image ? `<img src="${r.image}" alt="" loading="lazy" style="object-position:${r.imagePos || "50% 50%"}">` : "";
   return `<a class="card" href="#/r/${r.id}">
     <div class="card-img">${img}</div>
     <div class="card-body"><h3>${esc(r.title)}</h3></div>
@@ -246,12 +247,13 @@ function stepsEdit(r) {
 function renderDetail(r) {
   const editing = editingId === r.id;
   document.title = r.title;
-  app.className = r.image ? "" : "no-hero";
+  app.className = r.image || editing ? "" : "no-hero";
   const hasLists = r.ingredients.length || r.steps.length;
+  const choices = editing ? imageChoices(r) : [];
 
   app.innerHTML = `
     <div class="hero">
-      ${r.image ? `<img src="${r.image}" alt="">` : ""}
+      ${editing ? pickerHtml(r, choices) : r.image ? `<img src="${r.image}" alt="" style="object-position:${r.imagePos || "50% 50%"}">` : ""}
       <div class="hero-bar">
         <button class="glass" data-action="home" aria-label="Back">${icon("back")}</button>
         <div>
@@ -297,7 +299,70 @@ function renderDetail(r) {
     </article>`;
   app.dataset.id = r.id;
   app.querySelectorAll("textarea").forEach(autosize);
+  if (editing) mountPicker(r, choices);
   requestWakeLock();
+}
+
+// ---------- Picture picker (edit mode) ----------
+// Swipe between the reel's screenshots, three framings of the cover when there are
+// no screenshots, and photos picked from the phone. The slide in view is the picture.
+
+function imageChoices(r) {
+  const center = "50% 50%";
+  const cover = r.cover || (r.photos?.includes(r.image) ? "" : r.image);
+  const list = [];
+  if (cover) {
+    if (r.frames?.length) list.push({ src: cover, pos: center });
+    else for (const pos of ["50% 12%", center, "50% 88%"]) list.push({ src: cover, pos });
+  }
+  for (const src of [...(r.frames || []), ...(r.photos || [])]) list.push({ src, pos: center });
+  return list;
+}
+
+function pickerHtml(r, choices) {
+  const slides = choices.map((c) => `<div class="slide"><img src="${c.src}" alt="" style="object-position:${c.pos}"></div>`).join("");
+  const dots = choices.length ? `<div class="dots">${choices.map(() => "<i></i>").join("")}<i class="add"></i></div>` : "";
+  return `<div class="slides" id="slides">${slides}
+      <label class="slide add-photo">${icon("image")}<span>Choose a photo</span><input type="file" accept="image/*" id="photo-input" hidden></label>
+    </div>${dots}`;
+}
+
+function mountPicker(r, choices) {
+  const slides = $("#slides");
+  if (!slides) return;
+  let index = Math.max(0, choices.findIndex((c) => c.src === r.image && c.pos === (r.imagePos || "50% 50%")));
+  if (!choices.length) index = 0;
+  const paintDots = (i) => app.querySelectorAll(".dots i").forEach((d, n) => d.classList.toggle("on", n === i));
+  requestAnimationFrame(() => {
+    slides.scrollLeft = index * slides.clientWidth;
+    paintDots(index);
+  });
+  let t;
+  slides.addEventListener("scroll", () => {
+    clearTimeout(t);
+    t = setTimeout(() => {
+      const i = Math.round(slides.scrollLeft / slides.clientWidth);
+      paintDots(i);
+      const c = choices[i];
+      if (c && (c.src !== r.image || c.pos !== r.imagePos)) {
+        r.image = c.src;
+        r.imagePos = c.pos;
+        saveSoon(r);
+      }
+    }, 120);
+  });
+  $("#photo-input").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const src = await imageToDataUrl(file).catch(() => "");
+    if (!src) return toast("Couldn’t open that photo");
+    r.cover ??= r.image || "";
+    r.photos = [...(r.photos || []), src];
+    r.image = src;
+    r.imagePos = "50% 50%";
+    saveSoon(r);
+    renderDetail(r);
+  });
 }
 
 function autosize(el) {
@@ -533,14 +598,19 @@ async function doImport() {
         setStatus("Saving the picture…", "busy");
         post.image = await imageToDataUrl(data.image).catch(() => "");
       }
+      if (data.video) {
+        setStatus("Taking screenshots…", "busy");
+        post.frames = await videoFrames(data.video).catch(() => []);
+      }
     }
 
     let parsed;
     let parser = "basic";
+    let aiCost = null;
     if (post.caption && settings.apiKey) {
       setStatus("Reading the recipe with AI…", "busy");
       try {
-        parsed = await aiParse(post.caption, settings.apiKey);
+        ({ recipe: parsed, cost: aiCost } = await aiParse(post.caption, settings.apiKey));
         parser = "ai";
       } catch (err) {
         console.warn(err);
@@ -558,6 +628,10 @@ async function doImport() {
       author: post.author || "",
       caption: post.caption || "",
       image: post.image || "",
+      cover: post.image || "",
+      frames: post.frames || [],
+      photos: [],
+      imagePos: "50% 50%",
       createdAt: Date.now(),
       parser,
       ...parsed,
@@ -565,6 +639,10 @@ async function doImport() {
       done: [],
       v: 2,
     };
+    if (aiCost) {
+      recordCost(recipe, aiCost);
+      toast(`Read with AI for ${money(aiCost.reading + aiCost.writing)}`);
+    }
     await save(recipe);
     closeSheet();
     location.hash = `#/r/${recipe.id}`;
@@ -576,16 +654,99 @@ async function doImport() {
   }
 }
 
-// Shrink the cover to a reasonable size and keep it as a data URL.
-async function imageToDataUrl(src) {
-  const blob = await (await fetch(src)).blob();
-  const bitmap = await createImageBitmap(blob);
-  const scale = Math.min(1, 900 / bitmap.width);
+// Pictures are shrunk to 900px wide and kept as data URLs.
+function toDataUrl(source, width, height) {
+  const scale = Math.min(1, 900 / width);
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL("image/jpeg", 0.82);
+}
+
+async function imageToDataUrl(src) {
+  const bitmap = await createImageBitmap(src instanceof Blob ? src : await (await fetch(src)).blob());
+  return toDataUrl(bitmap, bitmap.width, bitmap.height);
+}
+
+// Screenshots of the reel at 20%, 50% and 80% of its length.
+function videoFrames(src, at = [0.2, 0.5, 0.8]) {
+  return new Promise((resolve, reject) => {
+    const v = document.createElement("video");
+    const frames = [];
+    let i = 0;
+    const done = () => {
+      clearTimeout(timer);
+      v.removeAttribute("src");
+      v.load();
+      frames.length ? resolve(frames) : reject(new Error("No frames"));
+    };
+    const timer = setTimeout(done, 20000);
+    v.crossOrigin = "anonymous";
+    v.muted = true;
+    v.playsInline = true;
+    v.preload = "auto";
+    v.onerror = done;
+    // iOS only paints frames after playback has started once.
+    v.onloadedmetadata = () =>
+      Promise.resolve(v.play())
+        .catch(() => {})
+        .then(() => {
+          v.pause();
+          v.currentTime = v.duration * at[0];
+        });
+    v.onseeked = () => {
+      try {
+        frames.push(toDataUrl(v, v.videoWidth, v.videoHeight));
+      } catch {
+        return done();
+      }
+      if (++i < at.length) v.currentTime = v.duration * at[i];
+      else done();
+    };
+    v.src = src;
+  });
+}
+
+// ---------- AI spending ----------
+// Each AI read is logged on this device with its cost, so Settings can show totals.
+
+const spending = {
+  list() {
+    try {
+      return JSON.parse(localStorage.getItem("aiSpend") || "[]");
+    } catch {
+      return [];
+    }
+  },
+  add(entry) {
+    localStorage.setItem("aiSpend", JSON.stringify([...this.list(), entry]));
+  },
+};
+
+const money = (x) => (!x ? "$0" : x < 0.01 ? `$${Number(x.toPrecision(2))}` : `$${x.toFixed(2)}`);
+
+function recordCost(r, cost) {
+  spending.add({ t: Date.now(), id: r.id, title: r.title, reading: cost.reading, writing: cost.writing });
+  r.aiCost = (r.aiCost || 0) + cost.reading + cost.writing;
+}
+
+function spendingHtml() {
+  const list = spending.list();
+  const sum = (items, key) => items.reduce((n, e) => n + (key ? e[key] : e.reading + e.writing), 0);
+  const month = new Date();
+  month.setDate(1);
+  month.setHours(0, 0, 0, 0);
+  const total = sum(list);
+  const rows = [
+    ["Reads", String(list.length)],
+    ["Reading the captions", money(sum(list, "reading"))],
+    ["Writing the recipes", money(sum(list, "writing"))],
+    ["This month", money(sum(list.filter((e) => e.t >= month.getTime())))],
+    ["Total", money(total)],
+  ];
+  if (settings.credit) rows.push(["Credit left", `$${Number(Math.max(0, settings.credit - total).toFixed(4))}`]);
+  return `<dl class="stats">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>`;
 }
 
 async function reparseWithAi(r) {
@@ -594,13 +755,14 @@ async function reparseWithAi(r) {
   openSheet(`<h2>Re-read with AI</h2><div class="status" id="add-status"></div>`);
   setStatus("Reading the recipe with AI…", "busy");
   try {
-    const parsed = await aiParse(r.caption, settings.apiKey);
+    const { recipe: parsed, cost } = await aiParse(r.caption, settings.apiKey);
     Object.assign(r, parsed, { parser: "ai", have: [], done: [] });
     tidyIngredients(r);
+    recordCost(r, cost);
     await save(r);
     closeSheet();
     renderDetail(r);
-    toast("Recipe updated");
+    toast(`Recipe updated for ${money(cost.reading + cost.writing)}`);
   } catch (err) {
     setStatus(err.message || String(err), "error");
   }
@@ -612,7 +774,8 @@ function openMore(r) {
       ${r.caption ? `<button data-action="reparse">${icon("redo")}Re-read with AI</button>` : ""}
       ${r.sourceUrl ? `<a href="${esc(r.sourceUrl)}" target="_blank" rel="noopener">${icon("external")}Open reel on Instagram</a>` : ""}
       <button class="danger" data-action="delete">${icon("trash")}Delete recipe</button>
-    </div>`);
+    </div>
+    ${r.aiCost ? `<p class="menu-note">AI cost for this recipe: ${money(r.aiCost)}</p>` : ""}`);
 }
 
 function openSettings() {
@@ -620,7 +783,11 @@ function openSettings() {
     `<h2>Settings</h2>
     <label class="field"><span>Worker URL</span><input class="input" id="s-worker" type="url" placeholder="https://recipes-relay.you.workers.dev" value="${esc(settings.workerUrl)}"></label>
     <label class="field"><span>Anthropic API key</span><input class="input" id="s-key" type="password" placeholder="sk-ant-…" value="${esc(settings.apiKey)}" autocomplete="off"><small>Optional. Cleans up recipes with Claude Haiku.</small></label>
+    <label class="field"><span>Credit bought</span><input class="input" id="s-credit" inputmode="decimal" placeholder="5.00" value="${settings.credit || ""}"><small>Credit left counts AI reads made in this app.</small></label>
     <button class="primary" data-action="save-settings">Save</button>
+    <div class="divider"></div>
+    <h3>AI spending</h3>
+    ${spendingHtml()}
     <div class="divider"></div>
     <h3>Backup</h3>
     <div class="row-2">
@@ -889,6 +1056,7 @@ document.addEventListener("click", async (e) => {
     case "save-settings":
       settings.workerUrl = $("#s-worker").value;
       settings.apiKey = $("#s-key").value;
+      settings.credit = $("#s-credit").value;
       closeSheet();
       toast("Settings saved");
       break;

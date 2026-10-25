@@ -2,6 +2,8 @@
 
 const SDK_URL = "https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.132.1/+esm";
 const MODEL = "claude-haiku-5-5";
+// Claude Haiku 5.5 list prices in US dollars per token (prompts under 100K tokens).
+const PRICE = { input: 0.1 / 1e6, output: 0.5 / 1e6 };
 
 export const COURSES = ["main", "starter", "dessert", "side", "breakfast", "snack", "drink", "sauce"];
 export const TAGS = ["oven", "stovetop", "air-fryer", "no-cook", "resting", "freezer", "quick", "vegetarian", "vegan"];
@@ -67,7 +69,10 @@ export async function aiParse(caption, apiKey) {
   if (response.stop_reason === "max_tokens") throw new Error("The AI answer was cut off");
   const block = response.content.find((b) => b.type === "text");
   const data = JSON.parse(block.text);
-  return {
+  const { input_tokens = 0, output_tokens = 0 } = response.usage || {};
+  // Output tokens include the model's thinking, which is billed the same way.
+  const cost = { reading: input_tokens * PRICE.input, writing: output_tokens * PRICE.output, inputTokens: input_tokens, outputTokens: output_tokens };
+  const recipe = {
     title: data.title,
     lang: data.language,
     servings: data.servings,
@@ -77,4 +82,5 @@ export async function aiParse(caption, apiKey) {
     steps: data.steps,
     noRecipe: !data.has_recipe || data.ingredients.length < 2,
   };
+  return { recipe, cost };
 }
