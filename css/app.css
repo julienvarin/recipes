@@ -201,8 +201,8 @@ textarea.input { height: auto; min-height: 140px; padding: 12px 14px; line-heigh
 .servings-edit svg { width: 18px; height: 18px; }
 .tag-editor .te-label { margin: 18px 0 8px 2px; font-size: 12px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .chip-pick { display: flex; flex-wrap: wrap; gap: 8px; }
-.chip.static.add { border: 1.5px dashed var(--line); background: none; color: var(--muted); padding: 0 9px; }
-.chip.static.add svg { width: 15px; height: 15px; }
+.chip.static.add { width: 28px; padding: 0; justify-content: center; border-radius: 50%; background: var(--text); color: var(--bg); }
+.chip.static.add svg { width: 15px; height: 15px; stroke-width: 2.6; }
 .tag-add { display: inline-flex; align-items: center; height: 34px; padding: 0 3px 0 12px; border-radius: 999px; border: 1.5px dashed var(--line); background: var(--surface); }
 .tag-add input { width: 92px; border: 0; background: none; outline: none; font-size: 16px; color: var(--text); }
 .tag-add button { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--text); color: var(--bg); }

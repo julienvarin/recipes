@@ -179,7 +179,7 @@ function metaChipsHtml(r) {
     r.servings && editingId !== r.id && `<span class="chip static">${icon("users")}${esc(r.servings)}</span>`,
     r.course && `<button class="chip static accent" data-action="tags">${COURSE_LABEL[r.course]}</button>`,
     ...r.tags.map((t) => `<button class="chip static" data-action="tags">${esc(tagLabel(t))}</button>`),
-    `<button class="chip static add" data-action="tags" aria-label="Edit tags">${icon("plus")}${r.tags.length || r.course ? "" : "Tag"}</button>`,
+    `<button class="chip static add" data-action="tags" aria-label="Add a tag">${icon("plus")}</button>`,
   ].filter(Boolean);
   return chips.join("");
 }
