@@ -247,13 +247,16 @@ function stepsEdit(r) {
 function renderDetail(r) {
   const editing = editingId === r.id;
   document.title = r.title;
-  app.className = r.image || editing ? "" : "no-hero";
+  const choices = imageChoices(r);
+  // The picture is swipeable on the recipe page; a recipe without any picture only
+  // shows the picker (with its "Choose a photo" slide) while editing.
+  const picker = editing || choices.length > 0;
+  app.className = picker ? "" : "no-hero";
   const hasLists = r.ingredients.length || r.steps.length;
-  const choices = editing ? imageChoices(r) : [];
 
   app.innerHTML = `
     <div class="hero">
-      ${editing ? pickerHtml(r, choices) : r.image ? `<img src="${r.image}" alt="" style="object-position:${r.imagePos || "50% 50%"}">` : ""}
+      ${picker ? pickerHtml(r, choices) : ""}
       <div class="hero-bar">
         <button class="glass" data-action="home" aria-label="Back">${icon("back")}</button>
         <div>
@@ -299,11 +302,11 @@ function renderDetail(r) {
     </article>`;
   app.dataset.id = r.id;
   app.querySelectorAll("textarea").forEach(autosize);
-  if (editing) mountPicker(r, choices);
+  if (picker) mountPicker(r, choices);
   requestWakeLock();
 }
 
-// ---------- Picture picker (edit mode) ----------
+// ---------- Picture picker ----------
 // Swipe between the reel's screenshots, three framings of the cover when there are
 // no screenshots, and photos picked from the phone. The slide in view is the picture.
 
@@ -669,8 +672,8 @@ async function imageToDataUrl(src) {
   return toDataUrl(bitmap, bitmap.width, bitmap.height);
 }
 
-// Screenshots of the reel at 20%, 50% and 80% of its length.
-function videoFrames(src, at = [0.2, 0.5, 0.8]) {
+// Screenshots spread across the reel: near the start, the middle and near the end.
+function videoFrames(src, at = [0.15, 0.5, 0.85]) {
   return new Promise((resolve, reject) => {
     const v = document.createElement("video");
     const frames = [];
