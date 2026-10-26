@@ -1,4 +1,5 @@
-// Optional AI parsing with Claude Haiku. The API key is stored on this device only.
+// Optional AI parsing with Claude Haiku. The API key is either stored on this device, or kept
+// on the Worker, which passes the request on to Anthropic (the app then sends the sync passphrase).
 
 const SDK_URL = "https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.132.1/+esm";
 const MODEL = "claude-haiku-5-5";
@@ -52,16 +53,19 @@ Rules:
 - If the caption has no real recipe (for example the recipe is only in the video), set has_recipe to false and leave the lists empty.`;
 
 let clientPromise;
-async function getClient(apiKey) {
-  if (!clientPromise || clientPromise.key !== apiKey) {
-    clientPromise = import(SDK_URL).then(({ default: Anthropic }) => new Anthropic({ apiKey, dangerouslyAllowBrowser: true }));
-    clientPromise.key = apiKey;
+/** auth is { apiKey } or { workerUrl, token } */
+async function getClient(auth) {
+  const key = JSON.stringify(auth);
+  if (!clientPromise || clientPromise.key !== key) {
+    const options = auth.apiKey ? { apiKey: auth.apiKey } : { apiKey: null, authToken: auth.token, baseURL: `${auth.workerUrl}/anthropic` };
+    clientPromise = import(SDK_URL).then(({ default: Anthropic }) => new Anthropic({ ...options, dangerouslyAllowBrowser: true }));
+    clientPromise.key = key;
   }
   return clientPromise;
 }
 
-export async function aiParse(caption, apiKey) {
-  const client = await getClient(apiKey);
+export async function aiParse(caption, auth) {
+  const client = await getClient(auth);
   const response = await client.messages.create({
     model: MODEL,
     max_tokens: 8000,

@@ -1,6 +1,7 @@
 import { db } from "./db.js";
 import { parseCaption, findDurations } from "./parse.js";
 import { aiParse, COURSES, TAGS } from "./ai.js";
+import { planSync, syncApi } from "./sync.js";
 import { normalizeIngredient, sortIngredients, blockOf, isStaple } from "./ingredients.js";
 
 // ---------- Small helpers ----------
@@ -65,7 +66,16 @@ const settings = {
   get credit() { return parseFloat(localStorage.getItem("aiCredit")) || 0; },
   set credit(v) { localStorage.setItem("aiCredit", String(parseFloat(String(v).replace(",", ".")) || "")); },
   set apiKey(v) { localStorage.setItem("apiKey", v.trim()); },
+  get syncToken() { return localStorage.getItem("syncToken") || ""; },
+  set syncToken(v) { localStorage.setItem("syncToken", v.trim()); },
 };
+
+// The key on this device wins; otherwise the Worker's key, when sync is on and it has one.
+function aiAuth() {
+  if (settings.apiKey) return { apiKey: settings.apiKey };
+  if (syncOn() && localStorage.getItem("serverAi") === "1") return { workerUrl: settings.workerUrl, token: settings.syncToken };
+  return null;
+}
 
 let toastTimer;
 function toast(msg) {
@@ -86,6 +96,7 @@ async function save(recipe) {
   recipe.updatedAt = Date.now();
   if (!byId(recipe.id)) recipes.unshift(recipe);
   await db.put(recipe);
+  syncSoon();
 }
 
 // ---------- Router ----------
@@ -648,10 +659,10 @@ async function doImport() {
     let parsed;
     let parser = "basic";
     let aiCost = null;
-    if (post.caption && settings.apiKey) {
+    if (post.caption && aiAuth()) {
       setStatus("Reading the recipe with AI…", "busy");
       try {
-        ({ recipe: parsed, cost: aiCost } = await aiParse(post.caption, settings.apiKey));
+        ({ recipe: parsed, cost: aiCost } = await aiParse(post.caption, aiAuth()));
         parser = "ai";
       } catch (err) {
         console.warn(err);
@@ -792,12 +803,12 @@ function spendingHtml() {
 }
 
 async function reparseWithAi(r) {
-  if (!settings.apiKey) return toast("Add an API key in Settings first");
+  if (!aiAuth()) return toast("Add an API key in Settings first");
   if (!r.caption) return toast("No caption to read");
   openSheet(`<h2>Re-read with AI</h2><div class="status" id="add-status"></div>`);
   setStatus("Reading the recipe with AI…", "busy");
   try {
-    const { recipe: parsed, cost } = await aiParse(r.caption, settings.apiKey);
+    const { recipe: parsed, cost } = await aiParse(r.caption, aiAuth());
     Object.assign(r, parsed, { parser: "ai", have: [], done: [] });
     tidyIngredients(r);
     recordCost(r, cost);
@@ -824,12 +835,17 @@ function openSettings() {
   openSheet(
     `<h2>Settings</h2>
     <label class="field"><span>Worker URL</span><input class="input" id="s-worker" type="url" placeholder="https://recipes-relay.you.workers.dev" value="${esc(settings.workerUrl)}"></label>
-    <label class="field"><span>Anthropic API key</span><input class="input" id="s-key" type="password" placeholder="sk-ant-…" value="${esc(settings.apiKey)}" autocomplete="off"><small>Optional. Cleans up recipes with Claude Haiku.</small></label>
+    <label class="field"><span>Sync passphrase</span><input class="input" id="s-sync" type="password" value="${esc(settings.syncToken)}" autocomplete="off"><small>The Worker’s SYNC_TOKEN. Use the same one on each device.</small></label>
+    <label class="field"><span>Anthropic API key</span><input class="input" id="s-key" type="password" placeholder="sk-ant-…" value="${esc(settings.apiKey)}" autocomplete="off"><small>${aiAuth()?.workerUrl ? "Optional. The Worker’s key is used while this is empty." : "Optional. Cleans up recipes with Claude Haiku."}</small></label>
     <label class="field"><span>Credit bought</span><input class="input" id="s-credit" inputmode="decimal" placeholder="5.00" value="${settings.credit || ""}"><small>Credit left counts AI reads made in this app.</small></label>
     <button class="primary" data-action="save-settings">Save</button>
     <div class="divider"></div>
     <h3>AI spending</h3>
     ${spendingHtml()}
+    ${syncOn() ? `<div class="divider"></div>
+    <h3>Sync</h3>
+    <dl class="stats"><div><dt>Last synced</dt><dd id="sync-state">${syncStateText()}</dd></div></dl>
+    <button class="secondary" data-action="sync-now">${icon("redo")}Sync now</button>` : ""}
     <div class="divider"></div>
     <h3>Backup</h3>
     <div class="row-2">
@@ -868,10 +884,122 @@ async function importBackup(e) {
     closeSheet();
     route();
     toast(`Imported ${added} recipe${added === 1 ? "" : "s"}`);
+    syncSoon();
   } catch {
     toast("That file isn’t a recipes backup");
   }
 }
+
+// ---------- Sync ----------
+// With a Worker URL and a sync passphrase, recipes are copied to the Worker and back,
+// so every device shows the same collection. See js/sync.js.
+
+const syncOn = () => !!(settings.workerUrl && settings.syncToken);
+const syncState = {
+  error: "",
+  get at() { return +localStorage.getItem("syncedAt") || 0; },
+  set at(v) { localStorage.setItem("syncedAt", String(v)); },
+  // Deleted here, not yet deleted on the Worker.
+  get deleted() {
+    try {
+      return JSON.parse(localStorage.getItem("syncDeleted") || "[]");
+    } catch {
+      return [];
+    }
+  },
+  set deleted(v) { localStorage.setItem("syncDeleted", JSON.stringify(v)); },
+};
+
+function syncStateText() {
+  if (syncState.error) return esc(syncState.error);
+  if (!syncState.at) return "Never";
+  const min = Math.round((Date.now() - syncState.at) / 60000);
+  return min < 1 ? "Just now" : min < 60 ? `${min} min ago` : new Date(syncState.at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+let syncTimer;
+function syncSoon(delay = 3000) {
+  if (!syncOn()) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => runSync(), delay);
+}
+
+let syncing = null;
+let syncAgain = false;
+async function runSync(loud = false) {
+  if (!syncOn()) return;
+  if (syncing) {
+    syncAgain = true;
+    return syncing;
+  }
+  syncing = (async () => {
+    const api = syncApi(settings.workerUrl, settings.syncToken);
+    let changed = false;
+    try {
+      const remote = await api.list();
+      localStorage.setItem("serverAi", remote.ai ? "1" : "");
+      // The recipe being edited is left alone; it syncs once editing ends.
+      const pending = syncState.deleted;
+      const plan = planSync(recipes, remote.recipes, pending);
+      for (const id of plan.pull) {
+        if (id === editingId) continue;
+        const r = await api.get(id);
+        if ((r.v || 1) < 3) tidyIngredients(r);
+        await db.put(r);
+        const at = recipes.findIndex((x) => x.id === id);
+        if (at >= 0) recipes[at] = r;
+        else recipes.push(r);
+        changed = true;
+      }
+      for (const id of plan.drop) {
+        if (id === editingId) continue;
+        await db.remove(id);
+        recipes = recipes.filter((r) => r.id !== id);
+        changed = true;
+      }
+      for (const id of plan.push) {
+        const r = byId(id);
+        if (!r || id === editingId) continue;
+        try {
+          await api.put(r);
+        } catch (err) {
+          if (err.status !== 409) throw err;
+          syncAgain = true; // a newer copy came from another device: pull it next round
+        }
+      }
+      for (const id of plan.remove) await api.remove(id);
+      // Handled now: removed, or already gone on the Worker. Deletions made during this round wait.
+      syncState.deleted = syncState.deleted.filter((id) => !pending.includes(id));
+      syncState.at = Date.now();
+      syncState.error = "";
+      if (loud) toast("Synced");
+    } catch (err) {
+      syncState.error = err.status === 401 ? "Wrong passphrase" : err.message || "Couldn’t sync";
+      if (loud) toast(syncState.error);
+    } finally {
+      if (changed) {
+        recipes.sort((a, b) => b.createdAt - a.createdAt);
+        if (!$("#sheet-root").innerHTML) route();
+      }
+      const state = $("#sync-state");
+      if (state) state.innerHTML = syncStateText();
+    }
+  })();
+  try {
+    await syncing;
+  } finally {
+    syncing = null;
+    if (syncAgain) {
+      syncAgain = false;
+      syncSoon(500);
+    }
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && Date.now() - syncState.at > 30000) syncSoon(0);
+});
+window.addEventListener("online", () => syncSoon(0));
 
 // ---------- Timers ----------
 // Stored with their end time, so they survive reloads and the app sleeping.
@@ -1092,15 +1220,22 @@ document.addEventListener("click", async (e) => {
       if (current && confirm(`Delete “${current.title}”?`)) {
         await db.remove(current.id);
         recipes = recipes.filter((r) => r !== current);
+        if (syncOn()) syncState.deleted = [...syncState.deleted, current.id];
         location.replace("#/");
+        syncSoon();
       }
       break;
     case "save-settings":
       settings.workerUrl = $("#s-worker").value;
       settings.apiKey = $("#s-key").value;
       settings.credit = $("#s-credit").value;
+      settings.syncToken = $("#s-sync").value;
       closeSheet();
-      toast("Settings saved");
+      if (syncOn()) runSync(true);
+      else toast("Settings saved");
+      break;
+    case "sync-now":
+      runSync(true);
       break;
     case "export":
       exportBackup();
@@ -1144,6 +1279,7 @@ async function start() {
   for (const r of recipes) if ((r.v || 1) < 3) db.put(tidyIngredients(r));
   route();
   tickTimers();
+  runSync();
 
   // Opened from the Android share sheet (or a ?url= link).
   const params = new URLSearchParams(location.search);

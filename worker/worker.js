@@ -5,7 +5,16 @@
 //
 // `video` is only there when Instagram shares the file publicly (often not for reels with music).
 //
-// It only talks to instagram.com and Instagram's image CDN.
+// Sync between devices (needs the RECIPES KV binding and the SYNC_TOKEN secret;
+// every call sends `Authorization: Bearer <SYNC_TOKEN>`):
+//
+//   GET    /sync           -> { ai, recipes: [{ id, u, d }] }  (u = updatedAt, d = deleted)
+//   GET    /sync/<id>      -> the recipe
+//   PUT    /sync/<id>      <- the recipe; 409 if the stored copy is newer
+//   DELETE /sync/<id>      -> leaves a tombstone so other devices delete it too
+//   POST   /anthropic/...  -> forwarded to api.anthropic.com with the ANTHROPIC_API_KEY secret
+//
+// Otherwise it only talks to instagram.com and Instagram's image CDN.
 
 // Sites allowed to call this worker. Add your own GitHub Pages address if it differs.
 const ALLOWED_ORIGINS = [
@@ -18,12 +27,13 @@ const UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
 
 export default {
-  async fetch(request) {
+  async fetch(request, env = {}) {
     const origin = request.headers.get("Origin") || "";
     const cors = {
       "Access-Control-Allow-Origin": ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0],
-      "Access-Control-Allow-Methods": "GET, OPTIONS",
-      "Access-Control-Allow-Headers": "Range",
+      "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": request.headers.get("Access-Control-Request-Headers") || "Range",
+      "Access-Control-Max-Age": "86400",
       Vary: "Origin",
     };
     if (request.method === "OPTIONS") return new Response(null, { headers: cors });
@@ -31,6 +41,8 @@ export default {
 
     const url = new URL(request.url);
     try {
+      if (url.pathname === "/sync" || url.pathname.startsWith("/sync/")) return await sync(request, url, env, cors);
+      if (url.pathname.startsWith("/anthropic/")) return await anthropic(request, url, env, cors);
       if (url.pathname === "/img") return await proxyMedia(url.searchParams.get("u"), request, cors);
       const target = url.searchParams.get("url");
       if (!target) return json({ ok: true, usage: "GET /?url=<instagram reel url>" }, 200, cors);
@@ -123,6 +135,87 @@ async function proxyMedia(u, request, cors) {
     "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
   };
   for (const h of ["Content-Length", "Content-Range", "Accept-Ranges"]) if (res.headers.get(h)) out[h] = res.headers.get(h);
+  return new Response(res.body, { status: res.status, headers: out });
+}
+
+// ---------- Sync ----------
+
+const MAX_RECIPE_BYTES = 20 * 1024 * 1024; // KV values can be up to 25 MiB
+
+function authorize(request, env) {
+  if (!env.SYNC_TOKEN) throw httpError("Sync isn’t set up on the Worker (add the SYNC_TOKEN secret)", 501);
+  const sent = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+  if (!sent || !safeEqual(sent, env.SYNC_TOKEN)) throw httpError("Wrong sync passphrase", 401);
+}
+
+function safeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function sync(request, url, env, cors) {
+  authorize(request, env);
+  const kv = env.RECIPES;
+  if (!kv) throw httpError("Sync isn’t set up on the Worker (no RECIPES storage)", 501);
+
+  const id = decodeURIComponent(url.pathname.slice("/sync/".length));
+  if (url.pathname === "/sync") {
+    if (request.method !== "GET") throw httpError("Method not allowed", 405);
+    const recipes = [];
+    let cursor;
+    do {
+      const page = await kv.list({ prefix: "r:", cursor });
+      for (const k of page.keys) recipes.push({ id: k.name.slice(2), u: k.metadata?.u || 0, d: k.metadata?.d ? 1 : 0 });
+      cursor = page.list_complete ? null : page.cursor;
+    } while (cursor);
+    return json({ ai: !!env.ANTHROPIC_API_KEY, recipes }, 200, cors);
+  }
+  if (!/^[\w-]{1,64}$/.test(id)) throw httpError("Bad recipe id", 400);
+  const key = `r:${id}`;
+
+  if (request.method === "GET") {
+    const value = await kv.get(key);
+    if (!value) throw httpError("Not found", 404);
+    return new Response(value, { headers: { ...cors, "Content-Type": "application/json; charset=utf-8" } });
+  }
+  if (request.method === "PUT") {
+    const body = await request.text();
+    if (body.length > MAX_RECIPE_BYTES) throw httpError("Recipe too big to sync", 413);
+    let recipe;
+    try {
+      recipe = JSON.parse(body);
+    } catch {
+      throw httpError("Not JSON", 400);
+    }
+    if (recipe?.id !== id) throw httpError("Recipe id doesn’t match", 400);
+    const u = Number(recipe.updatedAt || recipe.createdAt) || 0;
+    const { metadata } = await kv.getWithMetadata(key);
+    if (metadata?.u > u) return json({ error: "A newer copy is already synced", u: metadata.u }, 409, cors);
+    await kv.put(key, body, { metadata: { u } });
+    return json({ ok: true, u }, 200, cors);
+  }
+  if (request.method === "DELETE") {
+    const u = Date.now();
+    await kv.put(key, "", { metadata: { u, d: 1 } });
+    return json({ ok: true, u }, 200, cors);
+  }
+  throw httpError("Method not allowed", 405);
+}
+
+// Lets the app's Anthropic SDK use the key stored on the Worker: the request is passed
+// through unchanged, except that the sync passphrase is swapped for the API key.
+async function anthropic(request, url, env, cors) {
+  authorize(request, env);
+  if (!env.ANTHROPIC_API_KEY) throw httpError("No Anthropic API key on the Worker", 501);
+  if (request.method !== "POST" || url.pathname !== "/anthropic/v1/messages") throw httpError("Not allowed", 404);
+  const headers = { "Content-Type": "application/json", "x-api-key": env.ANTHROPIC_API_KEY };
+  for (const h of ["anthropic-version", "anthropic-beta"]) if (request.headers.get(h)) headers[h] = request.headers.get(h);
+  const res = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers, body: await request.text() });
+  const out = { ...cors, "Content-Type": res.headers.get("Content-Type") || "application/json" };
+  const rid = res.headers.get("request-id");
+  if (rid) out["request-id"] = rid;
   return new Response(res.body, { status: res.status, headers: out });
 }
 

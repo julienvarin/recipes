@@ -1,7 +1,7 @@
 // Offline support. The app shell is fetched network-first (so an update is never mixed with
 // stale files) and falls back to the cache when offline.
-const CACHE = "recipes-v8";
-const SHELL = ["./", "index.html", "css/app.css", "js/app.js", "js/db.js", "js/parse.js", "js/ingredients.js", "js/ai.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png"];
+const CACHE = "recipes-v9";
+const SHELL = ["./", "index.html", "css/app.css", "js/app.js", "js/db.js", "js/parse.js", "js/ingredients.js", "js/ai.js", "js/sync.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {
   // cache: "reload" skips the browser's HTTP cache, so every file comes from the same deploy.

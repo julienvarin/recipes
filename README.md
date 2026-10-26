@@ -8,14 +8,17 @@ Quick-reference recipe cards from Instagram reels, as a phone web app.
 - Durations in steps (“35 min”) are timer buttons.
 - Reset a card's checklist for the next time you cook it.
 - Works offline once loaded, and keeps the screen awake while a recipe is open.
-- Everything is stored on your device. Use **Settings → Export** for backups.
+- Recipes are stored on your device and, with sync on, on your Worker, so every phone and computer shows
+  the same collection. **Settings → Export** makes a backup file.
 
 ## How it works
 
 ```
 phone (GitHub Pages app) ──► Cloudflare Worker ──► instagram.com embed page
         │                       (caption, author, cover image)
+        │               └──(optional)──► Cloudflare KV: synced recipes
         └──(optional)──► Claude Haiku API: cleans up the recipe, simplifies steps, adds tags
+                          (directly with a key on the device, or through the Worker's key)
 ```
 
 GitHub Pages only serves static files, and browsers can't read Instagram directly, so a tiny free
@@ -39,6 +42,20 @@ You can add the text by hand.
 4. **Optional AI.** Create an API key at [console.anthropic.com](https://console.anthropic.com).
    It's pay-as-you-go, separate from a Claude Pro subscription, so set a spend limit. Paste the key in Settings.
    The key stays on your phone and is never in this repo. Haiku costs well under a cent per recipe.
+
+5. **Sync across devices (optional).** In the Cloudflare dashboard, open the `recipes` Worker → Settings →
+   Variables and Secrets, and add two secrets:
+   - `SYNC_TOKEN`: a long passphrase you make up (keep it in your password manager).
+   - `ANTHROPIC_API_KEY`: your API key, so no device needs its own (optional).
+
+   The `RECIPES` KV storage is created by the first deploy after this change. If that deploy fails on it,
+   create a KV namespace under Storage & Databases → KV and put its id in `wrangler.jsonc`
+   (`{ "binding": "RECIPES", "id": "…" }`).
+
+   On each device, open **Settings** and enter the Worker URL and the sync passphrase. Then
+   recipes, edits, checklists and deletions sync whenever the app opens or changes. If two devices
+   change the same recipe, the most recent change wins. Leave the API key field empty to use the Worker's key.
+   On iPhone, do this in the home-screen app: it keeps its own storage, separate from Safari.
 
 On Android, the installed app also shows up in Instagram's **Share** menu.
 

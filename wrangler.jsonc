@@ -5,5 +5,7 @@
   "name": "recipes",
   "main": "worker/worker.js",
   "compatibility_date": "2026-10-01",
-  "workers_dev": true
+  "workers_dev": true,
+  // Synced recipes. With no "id", `wrangler deploy` creates the namespace on the first deploy.
+  "kv_namespaces": [{ "binding": "RECIPES" }]
 }
